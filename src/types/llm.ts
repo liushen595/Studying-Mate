@@ -183,7 +183,7 @@ export class LLMRequestError extends Error {
 export interface ExecutionStepState {
   id: string;
   label: string;
-  kind: 'local' | 'ocr' | 'section' | 'vocab';
+  kind: 'local' | 'ocr' | 'split' | 'section' | 'vocab';
   status: 'pending' | 'thinking' | 'streaming' | 'done' | 'error';
   startedAt?: number;
   finishedAt?: number;

@@ -221,7 +221,9 @@ export interface ExamPaper {
   createdAt: number;
   updatedAt: number;
   status: 'ocr_draft' | 'analyzing' | 'completed' | 'partial_error';
+  // 原始输入存档
   sourceMode: 'text' | 'image';
+  parsingMode?: 'pre_parsed' | 'ai_segmented';
   rawMarkedText: string;
   sourceImageIds?: string[];
   sections: ExamSection[];

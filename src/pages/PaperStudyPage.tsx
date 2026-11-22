@@ -6,6 +6,8 @@ import {
   BookMarked,
   BookOpen,
   Columns2,
+  Edit3,
+  FilePlus2,
   Loader2,
   RefreshCw,
   Rows3,
@@ -19,6 +21,7 @@ import {
 } from '../stores/useSettingsStore';
 import { useTaskStore } from '../stores/useTaskStore';
 import { retrySingleSection } from '../lib/pipeline/analyzer';
+import { splitPaperIntoSections, stripExplicitMarkerLine } from '../lib/pipeline/pre-parser';
 import type { VocabEntry } from '../types/exam';
 import { ClozeView } from '../components/reader/ClozeView';
 import { ReadingView } from '../components/reader/ReadingView';
@@ -53,6 +56,8 @@ export function PaperStudyPage() {
   const [selectedSectionId, setSelectedSectionId] = useState<string | null>(null);
   const [wordPopup, setWordPopup] = useState<ActiveWordPopup | null>(null);
   const [highlightedVocabId, setHighlightedVocabId] = useState<string | null>(null);
+  const [inlineEditOpen, setInlineEditOpen] = useState(false);
+  const [inlineRawDraft, setInlineRawDraft] = useState('');
 
   const activeSection = useMemo(() => {
     if (!paper || paper.sections.length === 0) return null;
@@ -103,13 +108,54 @@ export function PaperStudyPage() {
     setTab('reading');
   };
 
-  const handleRetrySection = async (sectionId: string) => {
+  const handleRetrySection = async (sectionId: string, overrideRawText?: string) => {
     if (!paper) return;
     try {
-      await retrySingleSection(paper, sectionId, getAnalysisProvider());
+      await retrySingleSection(paper, sectionId, getAnalysisProvider(), overrideRawText);
+      setInlineEditOpen(false);
     } catch {
       // Error surfaced cleanly in ExecutionTimeline
     }
+  };
+
+  const resolveLatestSectionRawText = (secId: string): string => {
+    if (!paper) return '';
+    const sec = paper.sections.find((s) => s.id === secId);
+    if (!sec) return '';
+    if (paper.rawMarkedText) {
+      const drafts = splitPaperIntoSections(paper.rawMarkedText);
+      const matched = drafts.find(
+        (d) =>
+          d.id === sec.id ||
+          (d.type === sec.type && d.title.trim().toLowerCase() === sec.title.trim().toLowerCase()),
+      );
+      if (matched) return stripExplicitMarkerLine(matched.rawText);
+    }
+    return stripExplicitMarkerLine(sec.rawText || '');
+  };
+
+  const handleSaveInlineAndRetry = async () => {
+    if (!paper || !activeSection) return;
+    const oldRaw = resolveLatestSectionRawText(activeSection.id);
+    const nextSlice = inlineRawDraft.trim();
+    if (!nextSlice) return;
+
+    // Keep paper.rawMarkedText & section.rawText synchronized as a single source of truth
+    let nextFullRaw = paper.rawMarkedText || '';
+    if (oldRaw && nextFullRaw.includes(oldRaw)) {
+      nextFullRaw = nextFullRaw.replace(oldRaw, nextSlice);
+    }
+    const updatedSections = paper.sections.map((s) =>
+      s.id === activeSection.id ? { ...s, rawText: nextSlice } : s,
+    );
+    await db.papers.put({
+      ...paper,
+      rawMarkedText: nextFullRaw,
+      sections: updatedSections,
+      updatedAt: Date.now(),
+    });
+
+    await handleRetrySection(activeSection.id, nextSlice);
   };
 
   if (paper === undefined) {
@@ -238,6 +284,15 @@ export function PaperStudyPage() {
                 </button>
               ))}
             </div>
+
+            <Link
+              to={`/import?paperId=${paper.id}`}
+              className="inline-flex items-center gap-1 rounded-lg border border-border-subtle bg-surface-subtle px-2.5 py-1 text-[11px] font-medium text-text-secondary hover:border-accent hover:text-accent"
+              title="编辑全卷原文、重分配题型或增量追加新内容/图片"
+            >
+              <FilePlus2 className="h-3.5 w-3.5" />
+              <span className="hidden md:inline">编辑原文 / 增量追加</span>
+            </Link>
           </div>
         )}
       </header>
@@ -259,6 +314,7 @@ export function PaperStudyPage() {
                     type="button"
                     onClick={() => {
                       setWordPopup(null);
+                      setInlineEditOpen(false);
                       setSelectedSectionId(sec.id);
                     }}
                     className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-medium transition ${
@@ -273,6 +329,91 @@ export function PaperStudyPage() {
                   </button>
                 );
               })}
+            </div>
+          )}
+
+          {/* Per-Section Action Bar (Re-analyze ANY section, including done ones, or quick-edit its source text) */}
+          {activeSection && (
+            <div className="no-print space-y-3">
+              <div className="island px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 text-text-secondary">
+                  <span className="font-semibold text-text-primary">{activeSection.title}</span>
+                  <span className="rounded-full bg-surface-subtle px-2 py-0.5 text-[11px] text-text-muted">
+                    {activeSection.status === 'done'
+                      ? '已解析'
+                      : activeSection.status === 'error'
+                        ? '解析失败'
+                        : '解析中'}
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!inlineEditOpen) {
+                        setInlineRawDraft(resolveLatestSectionRawText(activeSection.id));
+                      }
+                      setInlineEditOpen((v) => !v);
+                    }}
+                    className="inline-flex items-center gap-1 rounded-lg border border-border-subtle bg-surface-subtle px-2.5 py-1 text-xs font-medium text-text-secondary hover:border-accent hover:text-text-primary"
+                  >
+                    <Edit3 className="h-3.5 w-3.5" />
+                    {inlineEditOpen ? '收起本段原文' : '微调本段原文'}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={running}
+                    onClick={() => handleRetrySection(activeSection.id)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent-soft/60 px-2.5 py-1 text-xs font-medium text-accent hover:bg-accent-soft disabled:opacity-45"
+                    title="引用最新编辑后的原文重新解析当前模块（即使已成功也可重析）"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${running ? 'animate-spin' : ''}`} />
+                    重新解析此段
+                  </button>
+                </div>
+              </div>
+
+              {inlineEditOpen && (
+                <div className="island p-4 space-y-3 border-accent/30">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-text-primary">
+                      编辑「{activeSection.title}」原文（保存后同步至全卷原文，并仅重析此段）
+                    </span>
+                    <Link
+                      to={`/import?paperId=${paper.id}`}
+                      className="text-xs font-medium text-accent hover:underline"
+                    >
+                      需要跨段重新分配题型？前往全卷编辑器 →
+                    </Link>
+                  </div>
+                  <textarea
+                    value={inlineRawDraft}
+                    onChange={(e) => setInlineRawDraft(e.target.value)}
+                    rows={10}
+                    className="w-full rounded-xl border border-border-subtle bg-surface-subtle/70 p-3 font-mono text-xs leading-relaxed text-text-primary focus:border-accent focus:outline-none"
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setInlineEditOpen(false)}
+                      className="rounded-lg border border-border-subtle px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary"
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      disabled={running || !inlineRawDraft.trim()}
+                      onClick={handleSaveInlineAndRetry}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3.5 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-45"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      保存修改并重新解析此段
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

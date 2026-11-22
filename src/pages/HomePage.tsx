@@ -4,6 +4,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import {
   BookMarked,
   BookOpen,
+  Edit3,
   FilePlus2,
   Image as ImageIcon,
   Settings,
@@ -176,7 +177,9 @@ export function HomePage() {
                                 ? '新题型'
                                 : sec.type === 'translation'
                                   ? '翻译'
-                                  : '精读'}
+                                  : sec.type === 'writing'
+                                    ? '写作'
+                                    : '精读'}
                         </span>
                       ))}
                     </div>
@@ -214,14 +217,23 @@ export function HomePage() {
                       </button>
                     </div>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDeleteId(paper.id)}
-                      className="rounded-lg p-1.5 text-text-muted opacity-70 transition hover:bg-danger-soft hover:text-danger hover:opacity-100"
-                      title="删除试卷"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <Link
+                        to={`/import?paperId=${paper.id}`}
+                        className="rounded-lg p-1.5 text-text-muted opacity-70 transition hover:bg-accent-soft hover:text-accent hover:opacity-100"
+                        title="编辑原文 / 增量追加"
+                      >
+                        <Edit3 className="h-3.5 w-3.5" />
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(paper.id)}
+                        className="rounded-lg p-1.5 text-text-muted opacity-70 transition hover:bg-danger-soft hover:text-danger hover:opacity-100"
+                        title="删除试卷"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>

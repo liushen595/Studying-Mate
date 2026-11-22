@@ -85,6 +85,7 @@ export function TranslationSyntaxCard({
                     vocabulary={vocabulary}
                     activeSurfaceForm={activeSurfaceForm}
                     onSelectVocab={onSelectVocab}
+                    allowUnderline
                   />
                 </p>
                 {layout !== 'english_only' && (

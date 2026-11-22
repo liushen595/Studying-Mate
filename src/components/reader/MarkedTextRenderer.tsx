@@ -10,6 +10,8 @@ interface Props {
   clozeBlanks?: Map<number, ClozeBlank>;
   activeBlankNumber?: number | null;
   onSelectBlank?: (blankNumber: number) => void;
+  /** Only true for Part C Translation context passages; stripped in Reading/Cloze/NewType/Writing to prevent cross-type OCR pollution */
+  allowUnderline?: boolean;
 }
 
 export function findVocabEntry(vocabulary: VocabEntry[], surfaceForm: string): VocabEntry | undefined {
@@ -37,10 +39,13 @@ export function MarkedTextRenderer({
   clozeBlanks,
   activeBlankNumber,
   onSelectBlank,
+  allowUnderline = false,
 }: Props) {
+  // Strip stray <u> tags in non-translation sections so OCR mis-marks never create blue underlines in Reading/Cloze
+  const normalizedText = allowUnderline ? text : text.replace(/<\/?u>/gi, '');
   // Split outer <u>...</u> spans first so underlined translation sentences render cleanly with nested {{vocab}}
   const underlineRegex = /(<u>[\s\S]*?<\/u>)/gi;
-  const segments = text.split(underlineRegex);
+  const segments = normalizedText.split(underlineRegex);
 
   const renderInlineTokens = (segment: string, keyPrefix: string) => {
     const tokenRegex = /(\{\{[^{}]+?\}\}|\[\[\s*\d+\s*\]\])/g;

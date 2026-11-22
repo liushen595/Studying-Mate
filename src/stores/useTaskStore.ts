@@ -9,6 +9,7 @@ interface TaskState {
   fatalError: LLMErrorDetail | null;
 
   startTask: (label: string, initialSteps: ExecutionStepState[]) => AbortController;
+  appendSteps: (newSteps: ExecutionStepState[]) => void;
   updateStep: (id: string, patch: Partial<ExecutionStepState>) => void;
   appendStepThinking: (id: string, fullThinking: string) => void;
   appendStepContent: (id: string, fullContent: string) => void;
@@ -36,6 +37,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     });
     return controller;
   },
+
+  appendSteps: (newSteps) =>
+    set((state) => ({
+      steps: [...state.steps, ...newSteps],
+    })),
 
   updateStep: (id, patch) =>
     set((state) => ({
