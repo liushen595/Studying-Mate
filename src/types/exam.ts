@@ -121,6 +121,54 @@ export interface TranslationSection extends BaseSection {
   items: TranslationItem[];
 }
 
+export interface WritingGoodWord {
+  expression: string;
+  posOrType?: string;
+  meaningZh: string;
+  replaces?: string;
+  usageExample?: string;
+}
+
+export interface WritingGoodSentence {
+  en: string;
+  zh: string;
+  pattern: string;
+  explanationZh: string;
+}
+
+export interface WritingTaskItem {
+  part: 'part_a' | 'part_b' | 'general';
+  partLabel: string;
+  number?: number;
+  promptEn: string;
+  promptZh: string;
+  visualSummary?: string;
+  guidance: {
+    genreAndTone: string;
+    wordCountTarget: string;
+    coreThemeZh: string;
+    outline: Array<{
+      paragraphLabel: string;
+      keyPoints: string[];
+      suggestedWords?: string;
+    }>;
+    scoringTips: string[];
+  };
+  sampleEssay: {
+    title?: string;
+    paragraphs: BilingualParagraph[];
+    wordCount: number;
+    commentaryZh: string;
+  };
+  goodWords: WritingGoodWord[];
+  goodSentences: WritingGoodSentence[];
+}
+
+export interface WritingSection extends BaseSection {
+  type: 'writing';
+  tasks: WritingTaskItem[];
+}
+
 export interface GeneralSection extends BaseSection {
   type: 'general';
   paragraphs: BilingualParagraph[];
@@ -131,6 +179,7 @@ export type ExamSection =
   | ReadingSection
   | NewTypeSection
   | TranslationSection
+  | WritingSection
   | GeneralSection;
 
 export interface VocabOccurrence {

@@ -7,6 +7,11 @@ import {
 } from '../../types/llm';
 import { buildHttpErrorDetail, buildNetworkErrorDetail } from './errors';
 import { consumeSSEStream } from './sse';
+import {
+  DEEPSEEK_IMAGE_LIMITS,
+  estimateBase64BinaryBytes,
+  formatByteSize,
+} from '../pipeline/image-prep';
 
 function stripTrailingSlash(url: string): string {
   return url.trim().replace(/\/+$/, '');
@@ -71,6 +76,84 @@ function validateBeforeRequest(profile: ProviderProfile, options: LLMCallOptions
         '请在设置页将「视觉 OCR 模型槽位」切换为支持识图的模型（例如 DeepSeek 的 deepseek-flash、阿里云百炼的 qwen3-vl-plus、Gemini 或 GPT-5）。',
       timestamp: Date.now(),
     });
+  }
+
+  // DeepSeek official multimodal image & request body guardrails (Base64 transport)
+  if (options.images && options.images.length > 0 && profile.presetKey === 'deepseek') {
+    const imgs = options.images;
+    if (imgs.length > DEEPSEEK_IMAGE_LIMITS.maxImagesPerRequest) {
+      throw new LLMRequestError({
+        kind: 'validation',
+        message: `单次请求图片数量（${imgs.length} 张）超过 DeepSeek 上限（${DEEPSEEK_IMAGE_LIMITS.maxImagesPerRequest} 张）`,
+        endpoint: profile.baseUrl,
+        modelId: profile.modelId,
+        hintZh: '请减少单批上传的图片数量，系统默认按每批 2 页分批 OCR。',
+        timestamp: Date.now(),
+      });
+    }
+
+    const maxDimAllowed =
+      imgs.length >= DEEPSEEK_IMAGE_LIMITS.manyImagesThreshold
+        ? DEEPSEEK_IMAGE_LIMITS.maxDimensionManyImages
+        : DEEPSEEK_IMAGE_LIMITS.maxDimensionDefault;
+
+    let totalBinaryBytes = 0;
+    let totalBase64Chars = 0;
+    for (let i = 0; i < imgs.length; i++) {
+      const img = imgs[i];
+      const binBytes = estimateBase64BinaryBytes(img.base64);
+      totalBinaryBytes += binBytes;
+      totalBase64Chars += img.base64.length + 64;
+
+      if (binBytes > DEEPSEEK_IMAGE_LIMITS.maxSingleBase64Bytes) {
+        throw new LLMRequestError({
+          kind: 'validation',
+          message: `第 ${i + 1} 张图片大小（${formatByteSize(binBytes)}）超过 DeepSeek Base64 单张上限（32 MiB）`,
+          endpoint: profile.baseUrl,
+          modelId: profile.modelId,
+          hintZh: '请重新上传让前端 Canvas 自动压缩为 2048px JPEG 后再试。',
+          timestamp: Date.now(),
+        });
+      }
+
+      if (
+        (img.width && img.width > maxDimAllowed) ||
+        (img.height && img.height > maxDimAllowed)
+      ) {
+        throw new LLMRequestError({
+          kind: 'validation',
+          message: `第 ${i + 1} 张图片尺寸（${img.width}×${img.height}）超过 DeepSeek 单边上限（${maxDimAllowed}px）`,
+          endpoint: profile.baseUrl,
+          modelId: profile.modelId,
+          hintZh: `DeepSeek 限制单边最长 8192px（单次 >=15 张时降为 4096px）。前端默认已缩放到 2048px 以内。`,
+          timestamp: Date.now(),
+        });
+      }
+    }
+
+    if (totalBinaryBytes > DEEPSEEK_IMAGE_LIMITS.maxTotalBase64Bytes) {
+      throw new LLMRequestError({
+        kind: 'validation',
+        message: `单次请求图片总大小（${formatByteSize(totalBinaryBytes)}）超过 DeepSeek 非 file_id 上限（64 MiB）`,
+        endpoint: profile.baseUrl,
+        modelId: profile.modelId,
+        hintZh: '请分批识别图片。',
+        timestamp: Date.now(),
+      });
+    }
+
+    const estBodyBytes =
+      totalBase64Chars + options.systemPrompt.length * 2 + options.userPrompt.length * 2 + 4096;
+    if (estBodyBytes > DEEPSEEK_IMAGE_LIMITS.maxRequestBodyBytes) {
+      throw new LLMRequestError({
+        kind: 'validation',
+        message: `单次请求体估算大小（${formatByteSize(estBodyBytes)}）超过 DeepSeek 48 MiB 上限`,
+        endpoint: profile.baseUrl,
+        modelId: profile.modelId,
+        hintZh: 'Base64 编码会增加约 33% 体积；请减少单批图片数或降低分辨率后再试。',
+        timestamp: Date.now(),
+      });
+    }
   }
 }
 

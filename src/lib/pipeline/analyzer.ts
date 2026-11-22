@@ -16,8 +16,10 @@ import {
   NewTypeResponseZod,
   ReadingResponseZod,
   TranslationResponseZod,
+  WritingResponseZod,
 } from '../prompts/sections';
 import { buildVocabBatchPrompt, VocabBatchResponseZod } from '../prompts/vocab';
+import { packOcrImageBatches } from './image-prep';
 import { extractVocabWithContext, type ParsedSectionDraft } from './pre-parser';
 import { db } from '../db';
 import { useTaskStore } from '../../stores/useTaskStore';
@@ -32,15 +34,20 @@ export async function runOcrStage(params: {
 }): Promise<string> {
   const { visionProvider, images } = params;
   const batchSize = Math.max(1, params.batchSize ?? 2);
-  const batches: ImageAttachment[][] = [];
-  for (let i = 0; i < images.length; i += batchSize) {
-    batches.push(images.slice(i, i + batchSize));
+  const batches = packOcrImageBatches(images, batchSize);
+
+  const batchRanges: Array<{ startPage: number; endPage: number }> = [];
+  let pageCursor = 1;
+  for (const batch of batches) {
+    const startPage = pageCursor;
+    const endPage = pageCursor + batch.length - 1;
+    batchRanges.push({ startPage, endPage });
+    pageCursor = endPage + 1;
   }
 
   const taskStore = useTaskStore.getState();
   const initialSteps: ExecutionStepState[] = batches.map((_, idx) => {
-    const startPage = idx * batchSize + 1;
-    const endPage = Math.min((idx + 1) * batchSize, images.length);
+    const { startPage, endPage } = batchRanges[idx];
     return {
       id: `ocr-${idx}`,
       label:
@@ -64,8 +71,7 @@ export async function runOcrStage(params: {
   try {
     for (let i = 0; i < batches.length; i++) {
       const stepId = `ocr-${i}`;
-      const startPage = i * batchSize + 1;
-      const endPage = Math.min((i + 1) * batchSize, images.length);
+      const { startPage, endPage } = batchRanges[i];
 
       useTaskStore.getState().updateStep(stepId, {
         status: 'thinking',
@@ -193,6 +199,16 @@ async function analyzeSingleSection(
       contextPassage: data.contextPassage,
       items: data.items,
     };
+  } else if (draft.type === 'writing') {
+    const data = parseAndValidateJson(res.content, WritingResponseZod, ctx);
+    section = {
+      id: draft.id,
+      type: 'writing',
+      title: data.title || draft.title,
+      rawText: draft.rawText,
+      status: 'done',
+      tasks: data.tasks,
+    };
   } else {
     const data = parseAndValidateJson(res.content, GeneralResponseZod, ctx);
     section = {
@@ -297,6 +313,9 @@ export async function runPaperAnalysisPipeline(params: {
     }
     if (d.type === 'translation') {
       return { id: d.id, type: 'translation', title: d.title, rawText: d.rawText, status: 'pending', items: [] };
+    }
+    if (d.type === 'writing') {
+      return { id: d.id, type: 'writing', title: d.title, rawText: d.rawText, status: 'pending', tasks: [] };
     }
     return { id: d.id, type: 'general', title: d.title, rawText: d.rawText, status: 'pending', paragraphs: [] };
   });

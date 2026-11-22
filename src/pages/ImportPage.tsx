@@ -14,6 +14,7 @@ import {
   Settings,
   Sparkles,
   Trash2,
+  Underline,
   Upload,
   ZoomIn,
   ZoomOut,
@@ -29,6 +30,7 @@ import {
 } from '../lib/pipeline/pre-parser';
 import {
   blobsToAttachments,
+  formatByteSize,
   preprocessExamImage,
 } from '../lib/pipeline/image-prep';
 import {
@@ -45,14 +47,17 @@ interface LocalImageItem {
   previewUrl: string;
   width: number;
   height: number;
+  originalBytes?: number;
+  compressedBytes: number;
 }
 
 const SECTION_TYPE_OPTIONS: Array<{ value: ExamSection['type'] | 'auto'; label: string }> = [
   { value: 'auto', label: '自动识别题型与分段（推荐）' },
-  { value: 'cloze', label: '强制按「完形填空」解析' },
-  { value: 'reading', label: '强制按「传统阅读」解析' },
-  { value: 'new_type', label: '强制按「新题型（七选五/排序/标题）」解析' },
-  { value: 'translation', label: '强制按「翻译题（含句子结构分析）」解析' },
+  { value: 'cloze', label: '强制按「Section I 完形填空」解析' },
+  { value: 'reading', label: '强制按「Section II Part A 传统阅读」解析' },
+  { value: 'new_type', label: '强制按「Section II Part B 新题型」解析' },
+  { value: 'translation', label: '强制按「Section II Part C 翻译（含句法）」解析' },
+  { value: 'writing', label: '强制按「Section III 写作（指导/范文/好词好句）」解析' },
   { value: 'general', label: '按「通用双语精读」解析' },
 ];
 
@@ -104,6 +109,7 @@ export function ImportPage() {
             previewUrl: URL.createObjectURL(img.blob),
             width: img.width,
             height: img.height,
+            compressedBytes: img.blob.size,
           })),
         );
         setMode('image');
@@ -159,6 +165,8 @@ export function ImportPage() {
         previewUrl: res.previewUrl,
         width: res.width,
         height: res.height,
+        originalBytes: res.originalBytes,
+        compressedBytes: res.compressedBytes,
       });
     }
     setImages((prev) => [...prev, ...processed]);
@@ -182,6 +190,7 @@ export function ImportPage() {
               previewUrl: rotated.previewUrl,
               width: rotated.width,
               height: rotated.height,
+              compressedBytes: rotated.compressedBytes,
             }
           : img,
       ),
@@ -213,6 +222,28 @@ export function ImportPage() {
       replacement = selected.slice(2, -2);
     } else {
       replacement = `{{${selected.trim()}}}`;
+    }
+    const next = rawText.slice(0, start) + replacement + rawText.slice(end);
+    setRawText(next);
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(start, start + replacement.length);
+    });
+  };
+
+  /** Toggle <u>...</u> around selected translation sentence in editor */
+  const handleToggleUnderlineWrap = () => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    if (start === end) return;
+    const selected = rawText.slice(start, end);
+    let replacement: string;
+    if (/^<u>[\s\S]*<\/u>$/i.test(selected.trim())) {
+      replacement = selected.trim().slice(3, -4);
+    } else {
+      replacement = `<u>${selected.trim()}</u>`;
     }
     const next = rawText.slice(0, start) + replacement + rawText.slice(end);
     setRawText(next);
@@ -472,7 +503,11 @@ export function ImportPage() {
             <div className="space-y-3">
               <div className="flex items-center justify-between text-xs text-text-secondary">
                 <span>
-                  已添加 {images.length} 张试卷照片（约 {estimatedImgTokens.toLocaleString()} 视觉 Token）
+                  已添加 {images.length} 张试卷照片 · 压缩后共{' '}
+                  <strong className="font-mono text-text-primary">
+                    {formatByteSize(images.reduce((sum, item) => sum + item.compressedBytes, 0))}
+                  </strong>{' '}
+                  （Base64 分批直传，每批 2 页，约 {estimatedImgTokens.toLocaleString()} 视觉 Token）
                 </span>
                 {rawText.trim() && (
                   <button
@@ -497,8 +532,18 @@ export function ImportPage() {
                       className="h-44 w-full object-cover"
                     />
                     <div className="flex items-center justify-between px-2.5 py-1.5 text-[11px] text-text-secondary bg-surface/90">
-                      <span className="truncate font-mono">
-                        P{idx + 1} · {img.width}×{img.height}
+                      <span
+                        className="truncate font-mono"
+                        title={
+                          img.originalBytes
+                            ? `原始 ${formatByteSize(img.originalBytes)} → 压缩后 ${formatByteSize(img.compressedBytes)} (${img.width}×${img.height})`
+                            : `${formatByteSize(img.compressedBytes)} (${img.width}×${img.height})`
+                        }
+                      >
+                        P{idx + 1} · {formatByteSize(img.compressedBytes)}
+                        {img.originalBytes && img.originalBytes > img.compressedBytes * 1.5
+                          ? ` (原${formatByteSize(img.originalBytes)})`
+                          : ''}
                       </span>
                       <div className="flex items-center gap-1">
                         <button
@@ -641,6 +686,16 @@ export function ImportPage() {
                   标记/取消 {'{{生词}}'} (Ctrl+M)
                 </button>
 
+                <button
+                  type="button"
+                  onClick={handleToggleUnderlineWrap}
+                  className="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent-soft/60 px-2.5 py-1 text-xs font-medium text-accent hover:bg-accent-soft"
+                  title="选中 Part C 翻译划线句后点击快速包裹/取消 <u>...</u>"
+                >
+                  <Underline className="h-3.5 w-3.5" />
+                  标记翻译划线句
+                </button>
+
                 {mode === 'image' && (
                   <button
                     type="button"
@@ -723,7 +778,9 @@ export function ImportPage() {
                               ? '新题型'
                               : s.type === 'translation'
                                 ? '翻译(含句法)'
-                                : '精读'}
+                                : s.type === 'writing'
+                                  ? '写作(指导+范文)'
+                                  : '精读'}
                       </span>
                       <span className="truncate max-w-[180px]">{s.title}</span>
                     </span>

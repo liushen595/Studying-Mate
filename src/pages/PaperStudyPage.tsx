@@ -24,6 +24,7 @@ import { ClozeView } from '../components/reader/ClozeView';
 import { ReadingView } from '../components/reader/ReadingView';
 import { NewTypeView } from '../components/reader/NewTypeView';
 import { TranslationSyntaxCard } from '../components/reader/TranslationSyntaxCard';
+import { WritingView } from '../components/reader/WritingView';
 import { MarkedTextRenderer } from '../components/reader/MarkedTextRenderer';
 import {
   WordPopoverCard,
@@ -340,6 +341,15 @@ export function PaperStudyPage() {
             />
           ) : activeSection.type === 'translation' ? (
             <TranslationSyntaxCard
+              section={activeSection}
+              vocabulary={paper.vocabulary}
+              layout={readingLayout}
+              enTextClass={enTextClass}
+              activeSurfaceForm={wordPopup?.surfaceForm}
+              onSelectVocab={handleSelectVocab}
+            />
+          ) : activeSection.type === 'writing' ? (
+            <WritingView
               section={activeSection}
               vocabulary={paper.vocabulary}
               layout={readingLayout}

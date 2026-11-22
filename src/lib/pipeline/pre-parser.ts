@@ -53,10 +53,28 @@ export function listMarkedVocabTokens(text: string): string[] {
 }
 
 /**
- * Detect section type heuristically from title + content.
+ * Detect section type heuristically from title + content + optional parent section context.
  */
-export function detectSectionType(title: string, body: string): ExamSection['type'] {
-  const combined = `${title}\n${body.slice(0, 600)}`.toLowerCase();
+export function detectSectionType(
+  title: string,
+  body: string,
+  parentSection?: 'section1' | 'section2' | 'section3',
+): ExamSection['type'] {
+  const titleLower = title.toLowerCase();
+  const combined = `${title}\n${body.slice(0, 700)}`.toLowerCase();
+
+  // Explicit parent context disambiguates Part A / Part B under Section III Writing
+  if (parentSection === 'section3') {
+    return 'writing';
+  }
+  if (
+    /section\s*(iii|3)\b|writing|写作|作文|小作文|大作文/.test(titleLower) ||
+    /\[图画\/图表信息|write\s+an?\s+(essay|letter|email|notice|memo|reply|report)|about\s+(100|150)\s+words|160\s*[-–—~]\s*200\s+words|do\s+not\s+sign\s+your\s+own\s+name/i.test(
+      combined,
+    )
+  ) {
+    return 'writing';
+  }
   if (
     /use\s+of\s+english|cloze|完形|完型/.test(combined) ||
     /\[\[\s*1\s*\]\][\s\S]*\[\[\s*2\s*\]\]/.test(body) ||
@@ -64,7 +82,10 @@ export function detectSectionType(title: string, body: string): ExamSection['typ
   ) {
     return 'cloze';
   }
-  if (/part\s*c|translation|翻译/.test(title.toLowerCase()) || /\(46\)|46\.\s/.test(body)) {
+  if (
+    /part\s*c|translation|翻译/.test(titleLower) ||
+    /<u>\s*\(\s*46\s*\)|\b\(46\)|46\.\s/.test(body)
+  ) {
     return 'translation';
   }
   if (
@@ -84,7 +105,18 @@ export function detectSectionType(title: string, body: string): ExamSection['typ
 }
 
 const SECTION_HEADER_REGEX =
-  /^(?:#{1,3}\s*)?(Section\s+[I1-3]+[^\n]*|Part\s+[A-C]\b[^\n]*|Text\s+[1-4]\b[^\n]*|完[形型]填空[^\n]*|新题型[^\n]*|翻译[题部]?[^\n]*|Translation[^\n]*|Reading\s+Comprehension[^\n]*)$/im;
+  /^(?:#{1,3}\s*)?(Section\s+(?:III|II|I|[1-3])\b[^\n]*|Part\s+[A-C]\b[^\n]*|Text\s+[1-4]\b[^\n]*|完[形型]填空[^\n]*|新题型[^\n]*|翻译[题部]?[^\n]*|Translation[^\n]*|Reading\s+Comprehension[^\n]*|Writing[^\n]*|[大小]?作文[^\n]*|写作[题部]?[^\n]*)$/im;
+
+function detectParentSectionContext(
+  header: string,
+  current?: 'section1' | 'section2' | 'section3',
+): 'section1' | 'section2' | 'section3' | undefined {
+  const lower = header.toLowerCase();
+  if (/^section\s*(i\b|1\b)|use\s+of\s+english|完[形型]/.test(lower)) return 'section1';
+  if (/^section\s*(ii\b|2\b)|reading\s+comprehension|^text\s*[1-4]\b/.test(lower)) return 'section2';
+  if (/^section\s*(iii\b|3\b)|writing|写作|[大小]?作文/.test(lower)) return 'section3';
+  return current;
+}
 
 /**
  * Splits a full or partial Kaoyan English paper into structured section drafts.
@@ -99,9 +131,10 @@ export function splitPaperIntoSections(
   if (forcedType && forcedType !== 'auto') {
     const typeLabels: Record<ExamSection['type'], string> = {
       cloze: 'Section I Use of English (完形填空)',
-      reading: 'Reading Comprehension (阅读理解)',
-      new_type: 'Part B 新题型',
-      translation: 'Part C Translation (翻译)',
+      reading: 'Section II · Part A Reading Comprehension (阅读理解)',
+      new_type: 'Section II · Part B 新题型',
+      translation: 'Section II · Part C Translation (翻译)',
+      writing: 'Section III Writing (写作)',
       general: '文章精读',
     };
     return [
@@ -116,19 +149,26 @@ export function splitPaperIntoSections(
   }
 
   const lines = normalized.split('\n');
-  const boundaries: Array<{ lineIdx: number; title: string }> = [];
+  const boundaries: Array<{
+    lineIdx: number;
+    title: string;
+    parentSection?: 'section1' | 'section2' | 'section3';
+  }> = [];
 
+  let currentParent: 'section1' | 'section2' | 'section3' | undefined;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line || line.length > 85) continue;
     if (SECTION_HEADER_REGEX.test(line)) {
-      boundaries.push({ lineIdx: i, title: line.replace(/^#{1,3}\s*/, '') });
+      const cleanTitle = line.replace(/^#{1,3}\s*/, '');
+      currentParent = detectParentSectionContext(cleanTitle, currentParent);
+      boundaries.push({ lineIdx: i, title: cleanTitle, parentSection: currentParent });
     }
   }
 
   if (boundaries.length <= 1) {
     const title = boundaries[0]?.title || '文章精读';
-    const type = detectSectionType(title, normalized);
+    const type = detectSectionType(title, normalized, boundaries[0]?.parentSection);
     return [
       {
         id: 'sec-1',
@@ -137,12 +177,14 @@ export function splitPaperIntoSections(
             ? type === 'cloze'
               ? 'Section I Use of English (完形填空)'
               : type === 'new_type'
-                ? 'Part B 新题型'
+                ? 'Section II · Part B 新题型'
                 : type === 'translation'
-                  ? 'Part C Translation (翻译)'
-                  : type === 'reading'
-                    ? 'Reading Comprehension (阅读理解)'
-                    : '文章精读'
+                  ? 'Section II · Part C Translation (翻译)'
+                  : type === 'writing'
+                    ? 'Section III Writing (写作)'
+                    : type === 'reading'
+                      ? 'Section II · Part A Reading Comprehension (阅读理解)'
+                      : '文章精读'
             : title,
         type,
         rawText: normalized,
@@ -156,12 +198,32 @@ export function splitPaperIntoSections(
     const start = boundaries[b].lineIdx;
     const end = b + 1 < boundaries.length ? boundaries[b + 1].lineIdx : lines.length;
     const slice = lines.slice(start, end).join('\n').trim();
-    // Skip empty wrapper headers like "Section II Reading Comprehension" immediately followed by "Part A" or "Text 1"
     const bodyWithoutHeader = lines.slice(start + 1, end).join('\n').trim();
+
+    // Skip empty wrapper headers (e.g. "Section II Reading Comprehension" or "Section III Writing" immediately followed by "Part A")
     if (bodyWithoutHeader.length < 12) continue;
 
-    const title = boundaries[b].title;
-    const type = detectSectionType(title, bodyWithoutHeader);
+    // Skip Section II Part A directions-only wrapper when immediately followed by Text 1
+    const nextTitle = boundaries[b + 1]?.title || '';
+    if (
+      /^part\s*a\b/i.test(boundaries[b].title) &&
+      boundaries[b].parentSection !== 'section3' &&
+      /^text\s*1\b/i.test(nextTitle) &&
+      bodyWithoutHeader.length < 320 &&
+      /directions/i.test(bodyWithoutHeader)
+    ) {
+      continue;
+    }
+
+    const parent = boundaries[b].parentSection;
+    let title = boundaries[b].title;
+    const type = detectSectionType(title, bodyWithoutHeader, parent);
+
+    // Disambiguate display title for Writing Part A / Part B
+    if (type === 'writing' && /^part\s*[ab]\b/i.test(title)) {
+      title = `Section III Writing · ${title}`;
+    }
+
     drafts.push({
       id: `sec-${drafts.length + 1}`,
       title,

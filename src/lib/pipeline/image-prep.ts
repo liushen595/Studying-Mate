@@ -1,27 +1,65 @@
 import type { ImageAttachment } from '../../types/llm';
 
+export const DEEPSEEK_IMAGE_LIMITS = {
+  /** Single HTTP request body max size: 48 MiB */
+  maxRequestBodyBytes: 48 * 1024 * 1024,
+  /** Single image file size limit (base64 / external URL): 32 MiB */
+  maxSingleBase64Bytes: 32 * 1024 * 1024,
+  /** Total images size per request without file_id: 64 MiB */
+  maxTotalBase64Bytes: 64 * 1024 * 1024,
+  /** Max images per single request */
+  maxImagesPerRequest: 600,
+  /** Max longest side (px) when < 15 images */
+  maxDimensionDefault: 8192,
+  /** Max longest side (px) when >= 15 images */
+  maxDimensionManyImages: 4096,
+  /** Threshold count where max dimension drops to 4096px */
+  manyImagesThreshold: 15,
+} as const;
+
 export interface ProcessedImageResult {
   blob: Blob;
   base64: string;
   mimeType: 'image/jpeg';
   width: number;
   height: number;
+  originalBytes: number;
+  compressedBytes: number;
   previewUrl: string;
+}
+
+export function formatByteSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+export function estimateBase64BinaryBytes(base64: string): number {
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
 }
 
 /**
  * Client-side Canvas preprocessing for exam photos:
  * - Fixes EXIF orientation automatically via createImageBitmap
- * - Scales longest side <= maxDimension (default 2048px)
+ * - Scales longest side <= maxDimension (default 2048px, well within DeepSeek 4096/8192px limits)
+ * - Re-encodes large HEIC-converted PNGs (10-20 MB) into ~300-700 KB JPEG
  * - Keeps full RGB color (NEVER grayscale) so red-pen vocabulary boxes stay crisp!
  */
 export async function preprocessExamImage(
   file: Blob,
-  options: { maxDimension?: number; quality?: number; rotateDeg?: 0 | 90 | 180 | 270 } = {},
+  options: {
+    maxDimension?: number;
+    quality?: number;
+    maxTargetBytes?: number;
+    rotateDeg?: 0 | 90 | 180 | 270;
+  } = {},
 ): Promise<ProcessedImageResult> {
   const maxDim = options.maxDimension ?? 2048;
-  const quality = options.quality ?? 0.86;
+  const initialQuality = options.quality ?? 0.86;
+  const maxTargetBytes = options.maxTargetBytes ?? 4 * 1024 * 1024; // 4 MiB soft ceiling per compressed page
   const rotateDeg = options.rotateDeg ?? 0;
+  const originalBytes = file.size;
 
   const bitmap = await createImageBitmap(file);
   try {
@@ -51,13 +89,22 @@ export async function preprocessExamImage(
     ctx.rotate((rotateDeg * Math.PI) / 180);
     ctx.drawImage(bitmap, -targetW / 2, -targetH / 2, targetW, targetH);
 
-    const blob = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob(
-        (b) => (b ? resolve(b) : reject(new Error('图像 JPEG 压缩失败'))),
-        'image/jpeg',
-        quality,
-      );
-    });
+    const encodeJpeg = (q: number) =>
+      new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error('图像 JPEG 压缩失败'))),
+          'image/jpeg',
+          q,
+        );
+      });
+
+    let blob = await encodeJpeg(initialQuality);
+    // Adaptive quality step-down if an unusually dense page still exceeds target size
+    for (const fallbackQ of [0.8, 0.75, 0.72]) {
+      if (blob.size <= maxTargetBytes) break;
+      if (fallbackQ >= initialQuality) continue;
+      blob = await encodeJpeg(fallbackQ);
+    }
 
     const base64 = await blobToPureBase64(blob);
     const previewUrl = URL.createObjectURL(blob);
@@ -68,11 +115,47 @@ export async function preprocessExamImage(
       mimeType: 'image/jpeg',
       width: canvas.width,
       height: canvas.height,
+      originalBytes,
+      compressedBytes: blob.size,
       previewUrl,
     };
   } finally {
     bitmap.close();
   }
+}
+
+/**
+ * Packs OCR images into batches respecting both page count (default 2 for OCR accuracy)
+ * and safe Base64 request body payload budget (well under DeepSeek's 48 MiB limit).
+ */
+export function packOcrImageBatches(
+  images: ImageAttachment[],
+  maxPerBatch = 2,
+  maxBatchBase64Chars = 30 * 1024 * 1024, // ~30 MiB of Base64 chars, safely under 48 MiB request body limit
+): ImageAttachment[][] {
+  const limitCount = Math.max(1, maxPerBatch);
+  const batches: ImageAttachment[][] = [];
+  let current: ImageAttachment[] = [];
+  let currentChars = 0;
+
+  for (const img of images) {
+    const imgChars = img.base64.length + 128;
+    if (
+      current.length > 0 &&
+      (current.length >= limitCount || currentChars + imgChars > maxBatchBase64Chars)
+    ) {
+      batches.push(current);
+      current = [];
+      currentChars = 0;
+    }
+    current.push(img);
+    currentChars += imgChars;
+  }
+
+  if (current.length > 0) {
+    batches.push(current);
+  }
+  return batches;
 }
 
 export function blobToPureBase64(blob: Blob): Promise<string> {

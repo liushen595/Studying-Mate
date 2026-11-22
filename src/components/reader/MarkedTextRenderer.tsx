@@ -24,8 +24,9 @@ export function findVocabEntry(vocabulary: VocabEntry[], surfaceForm: string): V
 
 /**
  * Renders English exam text with:
- * 1. `{{word}}` -> understated amber dashed underline, clickable to open Word Popover Card
- * 2. `[[1]]` -> emerald inline filled-answer pill for Cloze passages
+ * 1. `<u>...</u>` -> underlined translation sentence highlight (supports nested `{{word}}`)
+ * 2. `{{word}}` -> understated amber dashed underline, clickable to open Word Popover Card
+ * 3. `[[1]]` -> emerald inline filled-answer pill for Cloze passages
  */
 export function MarkedTextRenderer({
   text,
@@ -37,80 +38,103 @@ export function MarkedTextRenderer({
   activeBlankNumber,
   onSelectBlank,
 }: Props) {
-  const tokenRegex = /(\{\{[^{}]+?\}\}|\[\[\s*\d+\s*\]\])/g;
-  const parts = text.split(tokenRegex);
+  // Split outer <u>...</u> spans first so underlined translation sentences render cleanly with nested {{vocab}}
+  const underlineRegex = /(<u>[\s\S]*?<\/u>)/gi;
+  const segments = text.split(underlineRegex);
 
-  return (
-    <>
-      {parts.map((part, idx) => {
-        if (!part) return null;
+  const renderInlineTokens = (segment: string, keyPrefix: string) => {
+    const tokenRegex = /(\{\{[^{}]+?\}\}|\[\[\s*\d+\s*\]\])/g;
+    const parts = segment.split(tokenRegex);
 
-        // Marked vocabulary {{...}}
-        if (part.startsWith('{{') && part.endsWith('}}')) {
-          const surfaceForm = part.slice(2, -2).trim();
-          const entry = findVocabEntry(vocabulary, surfaceForm);
-          const isActive =
-            activeSurfaceForm?.toLowerCase() === surfaceForm.toLowerCase();
+    return parts.map((part, idx) => {
+      if (!part) return null;
+      const key = `${keyPrefix}-${idx}`;
+
+      // Marked vocabulary {{...}}
+      if (part.startsWith('{{') && part.endsWith('}}')) {
+        const surfaceForm = part.slice(2, -2).trim();
+        const entry = findVocabEntry(vocabulary, surfaceForm);
+        const isActive =
+          activeSurfaceForm?.toLowerCase() === surfaceForm.toLowerCase();
+        return (
+          <span
+            key={key}
+            role="button"
+            tabIndex={0}
+            data-active={isActive ? 'true' : undefined}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectVocab(surfaceForm, sectionId, e.currentTarget, entry);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onSelectVocab(surfaceForm, sectionId, e.currentTarget, entry);
+              }
+            }}
+            className="vocab-mark"
+            title="点击查看生词释义卡片"
+          >
+            {surfaceForm}
+          </span>
+        );
+      }
+
+      // Cloze blank placeholder [[1]]
+      if (part.startsWith('[[') && part.endsWith(']]')) {
+        const num = parseInt(part.slice(2, -2).trim(), 10);
+        const blank = clozeBlanks?.get(num);
+        const isSelected = activeBlankNumber === num;
+
+        if (!blank) {
           return (
             <span
-              key={idx}
-              role="button"
-              tabIndex={0}
-              data-active={isActive ? 'true' : undefined}
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelectVocab(surfaceForm, sectionId, e.currentTarget, entry);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  onSelectVocab(surfaceForm, sectionId, e.currentTarget, entry);
-                }
-              }}
-              className="vocab-mark"
-              title="点击查看生词释义卡片"
+              key={key}
+              className="mx-0.5 inline-flex items-center rounded-md bg-surface-subtle px-1.5 py-0.5 font-mono text-xs text-text-muted"
             >
-              {surfaceForm}
+              [{num}]
             </span>
           );
         }
 
-        // Cloze blank placeholder [[1]]
-        if (part.startsWith('[[') && part.endsWith(']]')) {
-          const num = parseInt(part.slice(2, -2).trim(), 10);
-          const blank = clozeBlanks?.get(num);
-          const isSelected = activeBlankNumber === num;
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onSelectBlank?.(num)}
+            className={`mx-0.5 inline-flex items-baseline gap-1 rounded-lg border px-2 py-0.5 font-sans text-[0.88em] font-semibold transition ${
+              isSelected
+                ? 'border-answer bg-answer text-white shadow-xs'
+                : 'border-answer/30 bg-answer-soft text-answer hover:border-answer/60'
+            }`}
+            title={`第 ${num} 空 · 选 ${blank.correctOption}（点击查看四个选项）`}
+          >
+            <span className="font-mono text-[0.78em] opacity-80">{num}</span>
+            <span>{blank.correctWord}</span>
+          </button>
+        );
+      }
 
-          if (!blank) {
-            return (
-              <span
-                key={idx}
-                className="mx-0.5 inline-flex items-center rounded-md bg-surface-subtle px-1.5 py-0.5 font-mono text-xs text-text-muted"
-              >
-                [{num}]
-              </span>
-            );
-          }
+      return <span key={key}>{part}</span>;
+    });
+  };
 
+  return (
+    <>
+      {segments.map((seg, sIdx) => {
+        if (!seg) return null;
+        if (/^<u>[\s\S]*<\/u>$/i.test(seg)) {
+          const inner = seg.slice(3, -4);
           return (
-            <button
-              key={idx}
-              type="button"
-              onClick={() => onSelectBlank?.(num)}
-              className={`mx-0.5 inline-flex items-baseline gap-1 rounded-lg border px-2 py-0.5 font-sans text-[0.88em] font-semibold transition ${
-                isSelected
-                  ? 'border-answer bg-answer text-white shadow-xs'
-                  : 'border-answer/30 bg-answer-soft text-answer hover:border-answer/60'
-              }`}
-              title={`第 ${num} 空 · 选 ${blank.correctOption}（点击查看四个选项）`}
+            <u
+              key={`u-${sIdx}`}
+              className="decoration-accent/70 decoration-2 underline-offset-4 bg-accent-soft/35 rounded-xs px-0.5"
             >
-              <span className="font-mono text-[0.78em] opacity-80">{num}</span>
-              <span>{blank.correctWord}</span>
-            </button>
+              {renderInlineTokens(inner, `u-${sIdx}`)}
+            </u>
           );
         }
-
-        return <span key={idx}>{part}</span>;
+        return <span key={`s-${sIdx}`}>{renderInlineTokens(seg, `s-${sIdx}`)}</span>;
       })}
     </>
   );
