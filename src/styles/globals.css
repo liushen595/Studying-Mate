@@ -1,0 +1,140 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-canvas: var(--bg-canvas);
+  --color-surface: var(--bg-surface);
+  --color-surface-subtle: var(--bg-surface-subtle);
+  --color-elevated: var(--bg-elevated);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-vocab: var(--vocab);
+  --color-vocab-soft: var(--vocab-soft);
+
+  --color-answer: var(--answer);
+  --color-answer-soft: var(--answer-soft);
+
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-serif: "Source Serif 4", "Charter", "Georgia", "Cambria", "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+:root {
+  --bg-canvas: #F4F5F7;
+  --bg-surface: #FFFFFF;
+  --bg-surface-subtle: #F8F9FB;
+  --bg-elevated: #FFFFFF;
+  --border-subtle: rgba(15, 23, 42, 0.07);
+  --border-strong: rgba(15, 23, 42, 0.14);
+
+  --text-primary: #181A1F;
+  --text-secondary: #566070;
+  --text-muted: #8892A2;
+
+  --accent: #3B66F5;
+  --accent-soft: rgba(59, 102, 245, 0.10);
+
+  --vocab: #C97A16;
+  --vocab-soft: rgba(201, 122, 22, 0.10);
+
+  --answer: #0D8A62;
+  --answer-soft: rgba(13, 138, 98, 0.10);
+
+  --danger: #D9383A;
+  --danger-soft: rgba(217, 56, 58, 0.10);
+
+  --island-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 20px -6px rgba(15, 23, 42, 0.06);
+  --popover-shadow: 0 12px 32px -4px rgba(15, 23, 42, 0.14), 0 4px 10px -2px rgba(15, 23, 42, 0.06);
+}
+
+.dark {
+  --bg-canvas: #0D0F13;
+  --bg-surface: #161920;
+  --bg-surface-subtle: #1B1F28;
+  --bg-elevated: #1F2430;
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  --text-primary: #E8ECF2;
+  --text-secondary: #98A3B6;
+  --text-muted: #667085;
+
+  --accent: #668FFF;
+  --accent-soft: rgba(102, 143, 255, 0.14);
+
+  --vocab: #F0B429;
+  --vocab-soft: rgba(240, 180, 41, 0.14);
+
+  --answer: #34D399;
+  --answer-soft: rgba(52, 211, 153, 0.13);
+
+  --danger: #F87171;
+  --danger-soft: rgba(248, 113, 113, 0.14);
+
+  --island-shadow: 0 1px 0 rgba(255, 255, 255, 0.03);
+  --popover-shadow: 0 16px 40px -4px rgba(0, 0, 0, 0.55), 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+html, body {
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  min-height: 100%;
+}
+
+/* Island Card utility */
+.island {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 18px;
+  box-shadow: var(--island-shadow);
+}
+
+.island-popover {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  box-shadow: var(--popover-shadow);
+}
+
+/* Marked vocabulary underline */
+.vocab-mark {
+  cursor: pointer;
+  border-bottom: 1.75px dashed var(--vocab);
+  padding: 0 2px;
+  border-radius: 4px;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.vocab-mark:hover,
+.vocab-mark[data-active="true"] {
+  background-color: var(--vocab-soft);
+}
+
+/* Subtle custom scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
