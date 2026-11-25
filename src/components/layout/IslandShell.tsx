@@ -186,11 +186,11 @@ export function IslandShell({ children }: { children: React.ReactNode }) {
                 : 'text-text-secondary hover:bg-surface-subtle hover:text-text-primary'
             }`
           }
-          title="模型与参数设置"
+          title="设置"
         >
           <span className="flex items-center gap-2.5 min-w-0">
             <Settings className="h-4 w-4 shrink-0" />
-            {!sidebarCollapsed && <span className="truncate">模型与参数</span>}
+            {!sidebarCollapsed && <span className="truncate">设置</span>}
           </span>
           {!sidebarCollapsed && (
             <span

@@ -65,7 +65,7 @@
 pnpm install
 pnpm dev
 ```
-访问 `http://localhost:5173`。打开首页后可直接点击 **「加载全题型示例卷」** 体验全部精读与打印功能，或在 **「模型与参数」** 中填入 API Key 并测试连接。
+访问 `http://localhost:5173`。打开首页后可直接点击 **「加载全题型示例卷」** 体验全部精读与打印功能，或在 **「设置」** 中填入 API Key 并测试连接。
 
 ### 构建与部署到 Cloudflare Pages
 ```bash
