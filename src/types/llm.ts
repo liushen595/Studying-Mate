@@ -106,6 +106,8 @@ export interface ProviderProfile {
   baseUrl: string;
   workspaceMeta?: WorkspaceMeta;
   apiKey: string;
+  /** Local timestamp of last API key update, used for multi-device encrypted vault merge */
+  apiKeyUpdatedAt?: number;
   modelId: string;
   capabilities: ModelCapabilities;
   params: UnifiedModelParams;

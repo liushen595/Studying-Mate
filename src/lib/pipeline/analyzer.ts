@@ -5,7 +5,13 @@ import {
   type LLMErrorDetail,
   type ProviderProfile,
 } from '../../types/llm';
-import type { ExamPaper, ExamSection, VocabEntry } from '../../types/exam';
+import type {
+  ExamPaper,
+  ExamSection,
+  VocabEntry,
+  VocabExtractDensity,
+  VocabExtractMode,
+} from '../../types/exam';
 import { callLLM } from '../llm/adapters';
 import { parseAndValidateJson } from '../llm/json-recovery';
 import { buildOcrUserPrompt, OCR_SYSTEM_PROMPT } from '../prompts/ocr';
@@ -21,11 +27,20 @@ import {
   WritingResponseZod,
   type PromptParsingMode,
 } from '../prompts/sections';
-import { buildVocabBatchPrompt, VocabBatchResponseZod } from '../prompts/vocab';
+import {
+  AutoVocabExtractResponseZod,
+  buildAutoVocabDiscoveryPrompt,
+  buildVocabBatchPrompt,
+  VocabBatchResponseZod,
+  type ExtractedVocabItem,
+} from '../prompts/vocab';
 import { packOcrImageBatches } from './image-prep';
 import {
   buildLineNumberedText,
+  extractNamedVocabOccurrences,
   extractVocabWithContext,
+  injectVocabMarkersIntoSection,
+  listMarkedVocabTokens,
   sliceTextByLineRanges,
   splitPaperIntoSections,
   stripExplicitMarkerLine,
@@ -379,6 +394,8 @@ export async function runPaperAnalysisPipeline(params: {
   examType: ExamPaper['examType'];
   sourceMode: ExamPaper['sourceMode'];
   parsingMode?: PromptParsingMode;
+  vocabExtractMode?: VocabExtractMode;
+  vocabExtractDensity?: VocabExtractDensity;
   rawMarkedText: string;
   sectionsDraft: ParsedSectionDraft[];
   selectedDraftIds?: Set<string>;
@@ -392,6 +409,8 @@ export async function runPaperAnalysisPipeline(params: {
     examType,
     sourceMode,
     parsingMode = 'pre_parsed',
+    vocabExtractMode = 'manual_only',
+    vocabExtractDensity = 'balanced',
     rawMarkedText,
     provider,
     ocrModelId,
@@ -489,7 +508,7 @@ export async function runPaperAnalysisPipeline(params: {
       title: t.draft.title,
       rawText: stripExplicitMarkerLine(t.draft.rawText),
     }));
-    const extractedVocab = extractVocabWithContext(draftsForVocab);
+    const userExtractedVocab = extractVocabWithContext(draftsForVocab);
 
     // Filter out occurrences already covered identically in retained vocabulary
     const retainedSectionIds = new Set(
@@ -507,19 +526,18 @@ export async function runPaperAnalysisPipeline(params: {
           .filter((entry) => entry.occurrences.length > 0)
       : [];
 
-    const vocabBatchSize = 18;
-    const vocabBatches = [];
-    for (let i = 0; i < extractedVocab.length; i += vocabBatchSize) {
-      vocabBatches.push(extractedVocab.slice(i, i + vocabBatchSize));
-    }
+    const useAiVocabAugment = vocabExtractMode === 'ai_augment';
+    const aiVocabDraftTargets = useAiVocabAugment
+      ? targetDrafts.filter(({ draft }) => stripExplicitMarkerLine(draft.rawText).length >= 40)
+      : [];
 
-    // Append execution steps to timeline
+    // Append execution steps to timeline (vocab dictionary batch steps are appended after discovery)
     const pipelineSteps: ExecutionStepState[] = [
       {
         id: 'local-preparse',
         label: isIncremental
-          ? `增量规划：重析/新增 ${targetDrafts.length} 个模块（复用 ${sectionsDraft.length - targetDrafts.length} 个），提取 ${extractedVocab.length} 个生词`
-          : `分段就绪：共 ${sectionsDraft.length} 个题型模块，提取 ${extractedVocab.length} 个 {{生词}}`,
+          ? `增量规划：重析/新增 ${targetDrafts.length} 个模块（复用 ${sectionsDraft.length - targetDrafts.length} 个），手标 ${userExtractedVocab.length} 词${useAiVocabAugment ? ' + AI 自动补充生词' : ''}`
+          : `分段就绪：共 ${sectionsDraft.length} 个题型模块，手标 ${userExtractedVocab.length} 个 {{生词}}${useAiVocabAugment ? ' + 开启 AI 自动总结/补充生词' : ''}`,
         kind: 'local',
         status: 'done',
         startedAt: Date.now(),
@@ -535,9 +553,9 @@ export async function runPaperAnalysisPipeline(params: {
         thinkingText: '',
         contentPreview: '',
       })),
-      ...vocabBatches.map((batch, idx) => ({
-        id: `vocab-step-${idx}`,
-        label: `${isIncremental ? '增量' : ''}生词词典生成 · 第 ${idx + 1}/${vocabBatches.length} 批（${batch.length} 词）`,
+      ...aiVocabDraftTargets.map(({ draft }) => ({
+        id: `ai-vocab-discover-${draft.id}`,
+        label: `AI 自动总结/补充生词 · ${draft.title}`,
         kind: 'vocab' as const,
         status: 'pending' as const,
         thinkingText: '',
@@ -555,6 +573,7 @@ export async function runPaperAnalysisPipeline(params: {
       status: 'analyzing',
       sourceMode,
       parsingMode,
+      vocabExtractMode,
       rawMarkedText,
       sourceImageIds: undefined, // Images are discarded after OCR and not persisted
       sections: workingSections,
@@ -635,6 +654,114 @@ export async function runPaperAnalysisPipeline(params: {
       }
     });
 
+    // Step 1.5 (Optional): AI Auto-Summarize / Augment Vocabulary on top of user-marked words
+    const aiDiscoveredVocabItems: ExtractedVocabItem[] = [];
+    const existingUserVocabKeys = new Set<string>(userExtractedVocab.map((v) => v.key));
+
+    if (aiVocabDraftTargets.length > 0 && !controller.signal.aborted) {
+      await runWithConcurrency(aiVocabDraftTargets, async ({ draft, targetIndex }) => {
+        const stepId = `ai-vocab-discover-${draft.id}`;
+        try {
+          useTaskStore.getState().updateStep(stepId, {
+            status: 'thinking',
+            startedAt: Date.now(),
+          });
+          const cleanRaw = stripExplicitMarkerLine(draft.rawText);
+          const userWordsInSection = listMarkedVocabTokens(cleanRaw);
+          const { systemPrompt, userPrompt } = buildAutoVocabDiscoveryPrompt({
+            sectionTitle: draft.title,
+            sectionType: draft.type,
+            rawText: cleanRaw,
+            userMarkedWords: userWordsInSection,
+            density: vocabExtractDensity,
+          });
+          const res = await callLLM(provider, {
+            systemPrompt,
+            userPrompt,
+            expectJson: true,
+            signal: controller.signal,
+            onFirstToken: (ttftMs) => useTaskStore.getState().updateStep(stepId, { ttftMs }),
+            onThinkingDelta: (_d, full) => useTaskStore.getState().appendStepThinking(stepId, full),
+            onContentDelta: (_d, full) => useTaskStore.getState().appendStepContent(stepId, full),
+          });
+          const parsed = parseAndValidateJson(res.content, AutoVocabExtractResponseZod, {
+            endpoint: res.endpoint,
+            modelId: res.modelId,
+          });
+          totalTokens += res.usage.totalTokens || 0;
+
+          const { items, matchedForms } = extractNamedVocabOccurrences(
+            { id: draft.id, title: draft.title, rawText: cleanRaw },
+            parsed.words,
+            existingUserVocabKeys,
+          );
+          aiDiscoveredVocabItems.push(...items);
+
+          // Inject {{...}} markers into the rendered section text so AI-added words are clickable in Reading View
+          if (matchedForms.length > 0 && paper.sections[targetIndex]?.status === 'done') {
+            paper.sections[targetIndex] = injectVocabMarkersIntoSection(
+              paper.sections[targetIndex],
+              matchedForms,
+            );
+            paper.updatedAt = Date.now();
+            if (paper.analysisMeta) paper.analysisMeta.totalTokensUsed = totalTokens;
+            await db.papers.put({ ...paper, sections: [...paper.sections] });
+          }
+
+          useTaskStore.getState().updateStep(stepId, {
+            status: 'done',
+            finishedAt: Date.now(),
+            usage: res.usage,
+            detailNote: `补充 ${items.length} 个考研核心词`,
+          });
+        } catch (err) {
+          hasErrors = true;
+          const detail: LLMErrorDetail =
+            err instanceof LLMRequestError
+              ? err.detail
+              : {
+                  kind: 'validation',
+                  message: err instanceof Error ? err.message : String(err),
+                  endpoint: provider.baseUrl,
+                  modelId: provider.modelId,
+                  timestamp: Date.now(),
+                };
+          lastError = detail;
+          useTaskStore.getState().updateStep(stepId, {
+            status: 'error',
+            finishedAt: Date.now(),
+            error: detail,
+          });
+        }
+      });
+    }
+
+    // Merge user-marked + AI-discovered vocabulary items (deduplicated; 'user' always wins)
+    const combinedExtractedVocab = combineExtractedVocabItems([
+      ...userExtractedVocab,
+      ...aiDiscoveredVocabItems,
+    ]);
+    const vocabSourceLookup = buildVocabSourceLookup(combinedExtractedVocab);
+
+    const vocabBatchSize = 18;
+    const vocabBatches: ExtractedVocabItem[][] = [];
+    for (let i = 0; i < combinedExtractedVocab.length; i += vocabBatchSize) {
+      vocabBatches.push(combinedExtractedVocab.slice(i, i + vocabBatchSize));
+    }
+
+    if (vocabBatches.length > 0) {
+      useTaskStore.getState().appendSteps(
+        vocabBatches.map((batch, idx) => ({
+          id: `vocab-step-${idx}`,
+          label: `${isIncremental ? '增量' : ''}生词词典生成 · 第 ${idx + 1}/${vocabBatches.length} 批（${batch.length} 词）`,
+          kind: 'vocab' as const,
+          status: 'pending' as const,
+          thinkingText: '',
+          contentPreview: '',
+        })),
+      );
+    }
+
     // Step 2: Generate comprehensive vocabulary lexicon in batches and merge with retainedVocab
     const newVocabEntries: VocabEntry[] = [];
     await runWithConcurrency(vocabBatches, async (batch, idx) => {
@@ -659,7 +786,11 @@ export async function runPaperAnalysisPipeline(params: {
           modelId: res.modelId,
         });
         totalTokens += res.usage.totalTokens || 0;
-        newVocabEntries.push(...parsed.entries);
+        const taggedEntries: VocabEntry[] = parsed.entries.map((entry) => ({
+          ...entry,
+          source: resolveVocabEntrySource(entry, vocabSourceLookup),
+        }));
+        newVocabEntries.push(...taggedEntries);
         paper.vocabulary = mergeVocabEntries([...retainedVocab, ...newVocabEntries]);
         paper.updatedAt = Date.now();
         if (paper.analysisMeta) paper.analysisMeta.totalTokensUsed = totalTokens;
@@ -727,6 +858,10 @@ export async function retrySingleSection(
   sectionId: string,
   provider: ProviderProfile,
   overrideRawText?: string,
+  options?: {
+    vocabExtractMode?: VocabExtractMode;
+    vocabExtractDensity?: VocabExtractDensity;
+  },
 ): Promise<ExamPaper> {
   const latestPaper = (await db.papers.get(paper.id)) || paper;
   const idx = latestPaper.sections.findIndex((s) => s.id === sectionId);
@@ -759,11 +894,17 @@ export async function retrySingleSection(
     vocabCount: 0,
   };
 
-  const extractedVocab = extractVocabWithContext([
+  const effectiveVocabMode: VocabExtractMode =
+    options?.vocabExtractMode || latestPaper.vocabExtractMode || 'manual_only';
+  const effectiveDensity: VocabExtractDensity = options?.vocabExtractDensity || 'balanced';
+  const useAiVocab = effectiveVocabMode === 'ai_augment' && effectiveRawText.length >= 40;
+
+  const userExtractedVocab = extractVocabWithContext([
     { id: draft.id, title: draft.title, rawText: effectiveRawText },
   ]);
 
   const stepId = `retry-${sectionId}`;
+  const discoverStepId = `retry-ai-vocab-${sectionId}`;
   const initialSteps: ExecutionStepState[] = [
     {
       id: stepId,
@@ -773,11 +914,11 @@ export async function retrySingleSection(
       thinkingText: '',
       contentPreview: '',
     },
-    ...(extractedVocab.length > 0
+    ...(useAiVocab
       ? [
           {
-            id: `retry-vocab-${sectionId}`,
-            label: `增量更新本段生词（${extractedVocab.length} 词）`,
+            id: discoverStepId,
+            label: `AI 自动总结/补充生词 · ${sec.title}`,
             kind: 'vocab' as const,
             status: 'pending' as const,
             thinkingText: '',
@@ -792,7 +933,7 @@ export async function retrySingleSection(
     .startTask(`单段重新解析 · ${sec.title}`, initialSteps);
 
   try {
-    const { section, tokens } = await analyzeSingleSection(
+    let { section, tokens } = await analyzeSingleSection(
       provider,
       draft,
       stepId,
@@ -806,13 +947,67 @@ export async function retrySingleSection(
       occurrences: entry.occurrences.filter((o) => o.sectionId !== sec.id),
     })).filter((entry) => entry.occurrences.length > 0);
 
-    if (extractedVocab.length > 0) {
-      const vocabStepId = `retry-vocab-${sectionId}`;
-      useTaskStore.getState().updateStep(vocabStepId, {
+    let aiItems: ExtractedVocabItem[] = [];
+    if (useAiVocab) {
+      useTaskStore.getState().updateStep(discoverStepId, {
         status: 'thinking',
         startedAt: Date.now(),
       });
-      const { systemPrompt, userPrompt } = buildVocabBatchPrompt(extractedVocab);
+      const { systemPrompt, userPrompt } = buildAutoVocabDiscoveryPrompt({
+        sectionTitle: draft.title,
+        sectionType: draft.type,
+        rawText: effectiveRawText,
+        userMarkedWords: listMarkedVocabTokens(effectiveRawText),
+        density: effectiveDensity,
+      });
+      const discRes = await callLLM(provider, {
+        systemPrompt,
+        userPrompt,
+        expectJson: true,
+        signal: controller.signal,
+        onFirstToken: (ttftMs) => useTaskStore.getState().updateStep(discoverStepId, { ttftMs }),
+        onThinkingDelta: (_d, full) => useTaskStore.getState().appendStepThinking(discoverStepId, full),
+        onContentDelta: (_d, full) => useTaskStore.getState().appendStepContent(discoverStepId, full),
+      });
+      const discParsed = parseAndValidateJson(discRes.content, AutoVocabExtractResponseZod, {
+        endpoint: discRes.endpoint,
+        modelId: discRes.modelId,
+      });
+      totalNewTokens += discRes.usage.totalTokens || 0;
+      const { items, matchedForms } = extractNamedVocabOccurrences(
+        { id: draft.id, title: draft.title, rawText: effectiveRawText },
+        discParsed.words,
+        new Set(userExtractedVocab.map((v) => v.key)),
+      );
+      aiItems = items;
+      if (matchedForms.length > 0) {
+        section = injectVocabMarkersIntoSection(section, matchedForms);
+      }
+      useTaskStore.getState().updateStep(discoverStepId, {
+        status: 'done',
+        finishedAt: Date.now(),
+        usage: discRes.usage,
+        detailNote: `补充 ${items.length} 词`,
+      });
+    }
+
+    const combinedVocab = combineExtractedVocabItems([...userExtractedVocab, ...aiItems]);
+    const vocabSourceLookup = buildVocabSourceLookup(combinedVocab);
+
+    if (combinedVocab.length > 0) {
+      const vocabStepId = `retry-vocab-${sectionId}`;
+      useTaskStore.getState().appendSteps([
+        {
+          id: vocabStepId,
+          label: `增量更新本段生词（${combinedVocab.length} 词）`,
+          kind: 'vocab',
+          status: 'thinking',
+          startedAt: Date.now(),
+          thinkingText: '',
+          contentPreview: '',
+        },
+      ]);
+      const { systemPrompt, userPrompt } = buildVocabBatchPrompt(combinedVocab);
       const vocabRes = await callLLM(provider, {
         systemPrompt,
         userPrompt,
@@ -827,7 +1022,11 @@ export async function retrySingleSection(
         modelId: vocabRes.modelId,
       });
       totalNewTokens += vocabRes.usage.totalTokens || 0;
-      updatedVocabulary = mergeVocabEntries([...updatedVocabulary, ...parsedVocab.entries]);
+      const taggedEntries: VocabEntry[] = parsedVocab.entries.map((entry) => ({
+        ...entry,
+        source: resolveVocabEntrySource(entry, vocabSourceLookup),
+      }));
+      updatedVocabulary = mergeVocabEntries([...updatedVocabulary, ...taggedEntries]);
       useTaskStore.getState().updateStep(vocabStepId, {
         status: 'done',
         finishedAt: Date.now(),
@@ -879,6 +1078,60 @@ export async function retrySingleSection(
   }
 }
 
+function combineExtractedVocabItems(items: ExtractedVocabItem[]): ExtractedVocabItem[] {
+  const map = new Map<string, ExtractedVocabItem>();
+  for (const item of items) {
+    const existing = map.get(item.key);
+    if (!existing) {
+      map.set(item.key, {
+        ...item,
+        surfaceForms: [...item.surfaceForms],
+        occurrences: [...item.occurrences],
+      });
+    } else {
+      if (item.source === 'user') existing.source = 'user';
+      existing.surfaceForms = Array.from(new Set([...existing.surfaceForms, ...item.surfaceForms]));
+      for (const occ of item.occurrences) {
+        const dup = existing.occurrences.some(
+          (o) =>
+            o.sectionId === occ.sectionId &&
+            o.surfaceForm.toLowerCase() === occ.surfaceForm.toLowerCase() &&
+            o.sentenceEn === occ.sentenceEn,
+        );
+        if (!dup) existing.occurrences.push(occ);
+      }
+    }
+  }
+  return Array.from(map.values());
+}
+
+function buildVocabSourceLookup(items: ExtractedVocabItem[]): Map<string, 'user' | 'ai'> {
+  const map = new Map<string, 'user' | 'ai'>();
+  const put = (raw: string, src: 'user' | 'ai') => {
+    const k = raw.toLowerCase().trim();
+    if (!k) return;
+    if (map.get(k) === 'user') return; // user always takes precedence
+    map.set(k, src);
+  };
+  for (const item of items) {
+    put(item.key, item.source);
+    for (const f of item.surfaceForms) put(f, item.source);
+  }
+  return map;
+}
+
+function resolveVocabEntrySource(
+  entry: Pick<VocabEntry, 'id' | 'lemma' | 'surfaceForms'>,
+  lookup: Map<string, 'user' | 'ai'>,
+): 'user' | 'ai' {
+  const keys = [entry.id, entry.lemma, ...entry.surfaceForms]
+    .map((k) => k?.toLowerCase().trim())
+    .filter(Boolean) as string[];
+  if (keys.some((k) => lookup.get(k) === 'user')) return 'user';
+  if (keys.some((k) => lookup.get(k) === 'ai')) return 'ai';
+  return 'user';
+}
+
 function mergeVocabEntries(entries: VocabEntry[]): VocabEntry[] {
   const byLemma = new Map<string, VocabEntry>();
   for (const entry of entries) {
@@ -896,6 +1149,11 @@ function mergeVocabEntries(entries: VocabEntry[]): VocabEntry[] {
         new Set([...existing.surfaceForms, ...entry.surfaceForms, entry.lemma].filter(Boolean)),
       );
       existing.occurrences = deduplicateOccurrences([...existing.occurrences, ...entry.occurrences]);
+      if (entry.source === 'user' || existing.source === 'user') {
+        existing.source = 'user';
+      } else if (entry.source === 'ai') {
+        existing.source = 'ai';
+      }
       if ((!existing.comprehensiveMeanings || existing.comprehensiveMeanings.length === 0) && entry.comprehensiveMeanings?.length) {
         existing.comprehensiveMeanings = entry.comprehensiveMeanings;
       }

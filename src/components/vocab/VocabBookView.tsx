@@ -52,11 +52,17 @@ export function VocabBookView({
 }: Props) {
   const [query, setQuery] = useState('');
   const [sectionFilter, setSectionFilter] = useState<string>('all');
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'user' | 'ai'>('all');
   const [sortBy, setSortBy] = useState<'order' | 'alpha'>('order');
   const [recallMode, setRecallMode] = useState(false);
   const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
   const [printMode, setPrintMode] = useState<PrintLayoutMode>('complete');
   const [showPrintMenu, setShowPrintMenu] = useState(false);
+
+  const hasAiSupplemented = useMemo(
+    () => vocabulary.some((v) => v.source === 'ai'),
+    [vocabulary],
+  );
 
   const sectionOptions = useMemo(() => {
     const map = new Map<string, string>();
@@ -73,6 +79,8 @@ export function VocabBookView({
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     let list = vocabulary.filter((v) => {
+      if (sourceFilter === 'ai' && v.source !== 'ai') return false;
+      if (sourceFilter === 'user' && v.source === 'ai') return false;
       if (sectionFilter !== 'all') {
         const hasSec = v.occurrences.some((o) => o.sectionId === sectionFilter);
         if (!hasSec) return false;
@@ -92,7 +100,16 @@ export function VocabBookView({
       list = [...list].sort((a, b) => a.lemma.localeCompare(b.lemma));
     }
     return list;
-  }, [vocabulary, query, sectionFilter, sortBy]);
+  }, [vocabulary, query, sectionFilter, sourceFilter, sortBy]);
+
+  // Pair vocabulary entries into atomic 2-card rows for zero-cutoff 2-column A4 PDF printing
+  const pairedPrintRows = useMemo(() => {
+    const rows: Array<[VocabEntry, VocabEntry | null]> = [];
+    for (let i = 0; i < filtered.length; i += 2) {
+      rows.push([filtered[i], filtered[i + 1] ?? null]);
+    }
+    return rows;
+  }, [filtered]);
 
   const toggleReveal = (id: string) => {
     setRevealedIds((prev) => {
@@ -106,10 +123,14 @@ export function VocabBookView({
   const handlePrintPdf = (mode: PrintLayoutMode) => {
     setPrintMode(mode);
     setShowPrintMenu(false);
-    // Allow React to apply print layout classes before opening native vector print dialog
-    setTimeout(() => {
-      window.print();
-    }, 80);
+    // Wait two animation frames + micro-delay so React flushes the dedicated print sheet before window.print()
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          window.print();
+        }, 60);
+      });
+    });
   };
 
   const handleExportMarkdown = () => {
@@ -194,6 +215,22 @@ export function VocabBookView({
             </select>
           )}
 
+          {hasAiSupplemented && (
+            <select
+              value={sourceFilter}
+              onChange={(e) => setSourceFilter(e.target.value as 'all' | 'user' | 'ai')}
+              className="rounded-xl border border-border-subtle bg-surface-subtle px-3 py-2 text-xs font-medium text-text-primary focus:border-accent focus:outline-none"
+            >
+              <option value="all">全部来源（{vocabulary.length}）</option>
+              <option value="user">
+                手标生词（{vocabulary.filter((v) => v.source !== 'ai').length}）
+              </option>
+              <option value="ai">
+                AI 补充（{vocabulary.filter((v) => v.source === 'ai').length}）
+              </option>
+            </select>
+          )}
+
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as 'order' | 'alpha')}
@@ -253,14 +290,14 @@ export function VocabBookView({
             </button>
 
             {showPrintMenu && (
-              <div className="absolute right-0 mt-2 z-30 w-60 island-popover p-2 space-y-1">
+              <div className="absolute right-0 mt-2 z-30 w-64 island-popover p-2 space-y-1">
                 <button
                   type="button"
                   onClick={() => handlePrintPdf('complete')}
                   className="w-full rounded-xl px-3 py-2 text-left transition hover:bg-surface-subtle"
                 >
                   <div className="text-xs font-semibold text-text-primary">完整精读版 PDF</div>
-                  <div className="text-[11px] text-text-muted">全面释义 + 语境义 + 搭配 + 原句</div>
+                  <div className="text-[11px] text-text-muted">A4 单栏防截断 · 释义 + 搭配 + 原句</div>
                 </button>
                 <button
                   type="button"
@@ -268,7 +305,7 @@ export function VocabBookView({
                   className="w-full rounded-xl px-3 py-2 text-left transition hover:bg-surface-subtle"
                 >
                   <div className="text-xs font-semibold text-text-primary">紧凑双栏背词版 PDF</div>
-                  <div className="text-[11px] text-text-muted">A4 双栏高密度省纸排版</div>
+                  <div className="text-[11px] text-text-muted">A4 双栏整行防截断 · 高密度省纸</div>
                 </button>
                 <button
                   type="button"
@@ -276,45 +313,26 @@ export function VocabBookView({
                   className="w-full rounded-xl px-3 py-2 text-left transition hover:bg-surface-subtle"
                 >
                   <div className="text-xs font-semibold text-text-primary">默写自测版 PDF</div>
-                  <div className="text-[11px] text-text-muted">隐藏中文释义，留出默写横线</div>
+                  <div className="text-[11px] text-text-muted">双栏隐藏中文释义，留出默写横线</div>
                 </button>
+                <div className="border-t border-border-subtle px-3 pt-1.5 pb-1 text-[10.5px] text-text-muted">
+                  已启用 A4 防跨页截断排版，请在打印窗口选择「另存为 PDF」。
+                </div>
               </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* Print-Only Header */}
-      <div className="hidden print-only mb-4 border-b border-gray-300 pb-2">
-        <h1 className="text-lg font-bold text-gray-900">
-          {title} · 生词本（{filtered.length} 词）
-        </h1>
-        <p className="text-xs text-gray-500">
-          Studying-Mate 导出 ·{' '}
-          {printMode === 'dictation'
-            ? '默写自测版'
-            : printMode === 'compact'
-              ? '紧凑双栏背词版'
-              : '完整精读版'}{' '}
-          · {new Date().toLocaleDateString()}
-        </p>
-      </div>
-
-      {/* Empty state */}
+      {/* ==================== SCREEN VIEW (Interactive, hidden in PDF print) ==================== */}
       {filtered.length === 0 ? (
-        <div className="island p-10 text-center text-sm text-text-muted">
+        <div className="no-print island p-10 text-center text-sm text-text-muted">
           {vocabulary.length === 0
             ? '本套试卷尚未标记 {{生词}}，或生词本仍在生成中。'
             : '没有找到匹配的生词。'}
         </div>
       ) : (
-        <div
-          className={`grid gap-3.5 ${
-            printMode === 'compact' || printMode === 'dictation'
-              ? 'md:grid-cols-2 print-grid-2col'
-              : 'grid-cols-1'
-          }`}
-        >
+        <div className="no-print grid gap-3.5 grid-cols-1">
           {filtered.map((entry, index) => {
             const isHighlighted = highlightedVocabId === entry.id;
             const isHidden = recallMode && !revealedIds.has(entry.id);
@@ -326,7 +344,7 @@ export function VocabBookView({
                 onClick={() => {
                   if (recallMode) toggleReveal(entry.id);
                 }}
-                className={`island print-card p-4 sm:p-5 transition ${
+                className={`island p-4 sm:p-5 transition ${
                   recallMode ? 'cursor-pointer' : ''
                 } ${isHighlighted ? 'ring-2 ring-vocab' : ''}`}
               >
@@ -339,6 +357,11 @@ export function VocabBookView({
                     <h3 className="font-serif text-xl font-bold text-text-primary">
                       {entry.lemma}
                     </h3>
+                    {entry.source === 'ai' && (
+                      <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent">
+                        AI 补充
+                      </span>
+                    )}
                     {entry.surfaceForms.filter(
                       (f) => f.toLowerCase() !== entry.lemma.toLowerCase(),
                     ).length > 0 && (
@@ -360,7 +383,7 @@ export function VocabBookView({
                           className="inline-flex items-center gap-1 hover:text-accent"
                         >
                           <span>UK {entry.phoneticUk}</span>
-                          <Volume2 className="no-print h-3.5 w-3.5" />
+                          <Volume2 className="h-3.5 w-3.5" />
                         </button>
                       )}
                       {entry.phoneticUs && (
@@ -373,7 +396,7 @@ export function VocabBookView({
                           className="inline-flex items-center gap-1 hover:text-accent"
                         >
                           <span>US {entry.phoneticUs}</span>
-                          <Volume2 className="no-print h-3.5 w-3.5" />
+                          <Volume2 className="h-3.5 w-3.5" />
                         </button>
                       )}
                     </div>
@@ -386,7 +409,7 @@ export function VocabBookView({
                         e.stopPropagation();
                         onJumpToSection(entry.occurrences[0].sectionId);
                       }}
-                      className="no-print inline-flex items-center gap-1 rounded-lg bg-surface-subtle px-2.5 py-1 text-xs text-text-secondary hover:text-accent"
+                      className="inline-flex items-center gap-1 rounded-lg bg-surface-subtle px-2.5 py-1 text-xs text-text-secondary hover:text-accent"
                     >
                       <ArrowLeft className="h-3 w-3" />
                       {entry.occurrences[0].sectionTitle}
@@ -394,18 +417,11 @@ export function VocabBookView({
                   )}
                 </div>
 
-                {/* Dictation Print Mode Blank Line */}
-                {printMode === 'dictation' && (
-                  <div className="hidden print-only mt-4 border-b border-dashed border-gray-400 pb-3 text-xs text-gray-400">
-                    默写释义：
-                  </div>
-                )}
-
-                {/* Body Content (Hidden in Dictation print, blurred in Recall mode) */}
+                {/* Body Content (Blurred in Recall mode) */}
                 <div
                   className={`mt-3 space-y-3 transition ${
-                    printMode === 'dictation' ? 'no-print' : ''
-                  } ${isHidden ? 'blur-sm select-none opacity-40' : ''}`}
+                    isHidden ? 'blur-sm select-none opacity-40' : ''
+                  }`}
                 >
                   {/* Context Meaning */}
                   {entry.occurrences.length > 0 && (
@@ -441,8 +457,8 @@ export function VocabBookView({
                     ))}
                   </div>
 
-                  {/* Collocations & Confusables (Hidden in compact print to save paper) */}
-                  <div className={printMode === 'compact' ? 'no-print space-y-2' : 'space-y-2'}>
+                  {/* Collocations & Confusables */}
+                  <div className="space-y-2">
                     {entry.collocations.length > 0 && (
                       <div className="flex flex-wrap gap-2 text-xs">
                         {entry.collocations.map((c, i) => (
@@ -489,6 +505,260 @@ export function VocabBookView({
               </article>
             );
           })}
+        </div>
+      )}
+
+      {/* ==================== DEDICATED PRINT / PDF SHEET (Zero Flex/Grid Card Cutoff) ==================== */}
+      {filtered.length > 0 && (
+        <div className="hidden print-only print-sheet">
+          <div className="print-header">
+            <h1 style={{ fontSize: '15pt', fontWeight: 700, margin: 0, color: '#111827' }}>
+              {title} · 生词本（{filtered.length} 词）
+            </h1>
+            <p style={{ fontSize: '8.5pt', color: '#6b7280', margin: '3px 0 0 0' }}>
+              Studying-Mate 导出 ·{' '}
+              {printMode === 'dictation'
+                ? '默写自测版'
+                : printMode === 'compact'
+                  ? '紧凑双栏背词版'
+                  : '完整精读版'}{' '}
+              · {new Date().toLocaleDateString()}
+            </p>
+          </div>
+
+          {printMode === 'complete' ? (
+            <div className="print-list-1col">
+              {filtered.map((entry, index) => (
+                <article key={`print-${entry.id}`} className="print-vocab-card">
+                  <div style={{ display: 'block' }}>
+                    <span
+                      style={{
+                        fontFamily: 'monospace',
+                        fontSize: '8.5pt',
+                        color: '#6b7280',
+                        marginRight: '6px',
+                      }}
+                    >
+                      {String(index + 1).padStart(2, '0')}
+                    </span>
+                    <span className="print-word-title">{entry.lemma}</span>
+                    {entry.source === 'ai' && (
+                      <span
+                        style={{
+                          marginLeft: '6px',
+                          fontSize: '7.5pt',
+                          color: '#2563eb',
+                          background: '#eff6ff',
+                          padding: '1px 5px',
+                          borderRadius: '4px',
+                        }}
+                      >
+                        AI补充
+                      </span>
+                    )}
+                    {entry.surfaceForms.filter(
+                      (f) => f.toLowerCase() !== entry.lemma.toLowerCase(),
+                    ).length > 0 && (
+                      <span style={{ marginLeft: '7px', fontSize: '8pt', color: '#6b7280' }}>
+                        [原文:{' '}
+                        {entry.surfaceForms
+                          .filter((f) => f.toLowerCase() !== entry.lemma.toLowerCase())
+                          .join(', ')}
+                        ]
+                      </span>
+                    )}
+                    {(entry.phoneticUk || entry.phoneticUs) && (
+                      <span style={{ marginLeft: '8px', fontSize: '8.5pt', color: '#4b5563' }}>
+                        {entry.phoneticUk ? `UK ${entry.phoneticUk}` : ''}
+                        {entry.phoneticUk && entry.phoneticUs ? '  ' : ''}
+                        {entry.phoneticUs ? `US ${entry.phoneticUs}` : ''}
+                      </span>
+                    )}
+                  </div>
+
+                  {entry.occurrences.length > 0 && (
+                    <div className="print-context-box">
+                      {entry.occurrences.slice(0, 2).map((occ, i) => (
+                        <div key={i}>
+                          <strong style={{ color: '#b45309' }}>本文语境义：</strong>
+                          <span style={{ color: '#111827', fontWeight: 500 }}>
+                            {occ.contextMeaning}
+                          </span>
+                          {occ.isUncommonMeaning && (
+                            <span
+                              style={{
+                                marginLeft: '5px',
+                                fontSize: '7.5pt',
+                                color: '#b45309',
+                                fontWeight: 600,
+                              }}
+                            >
+                              [熟词僻义]
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={{ marginTop: '5px' }}>
+                    {entry.comprehensiveMeanings.map((m, idx) => (
+                      <div key={idx} style={{ fontSize: '9pt', marginTop: '2px', color: '#111827' }}>
+                        <strong
+                          style={{
+                            fontFamily: 'monospace',
+                            color: '#1d4ed8',
+                            marginRight: '5px',
+                          }}
+                        >
+                          {m.pos}
+                        </strong>
+                        <span>{m.definitions.join('；')}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {entry.collocations.length > 0 && (
+                    <div style={{ marginTop: '4px', fontSize: '8.3pt', color: '#374151' }}>
+                      <strong>常见搭配：</strong>
+                      {entry.collocations.map((c) => `${c.phrase} (${c.meaning})`).join(' ｜ ')}
+                    </div>
+                  )}
+
+                  {entry.wordFamily && entry.wordFamily.length > 0 && (
+                    <div style={{ marginTop: '2px', fontSize: '8.2pt', color: '#4b5563' }}>
+                      <strong>词族拓展：</strong>
+                      {entry.wordFamily.join(' · ')}
+                    </div>
+                  )}
+
+                  {entry.confusables && entry.confusables.length > 0 && (
+                    <div style={{ marginTop: '2px', fontSize: '8.2pt', color: '#4b5563' }}>
+                      <strong>易混辨析：</strong>
+                      {entry.confusables.map((c) => `${c.word}（${c.diff}）`).join('；')}
+                    </div>
+                  )}
+
+                  {entry.occurrences[0]?.sentenceEn && (
+                    <div className="print-sentence-box">
+                      <div
+                        style={{
+                          fontFamily: 'Georgia, "Times New Roman", serif',
+                          color: '#111827',
+                        }}
+                      >
+                        {entry.occurrences[0].sentenceEn}
+                      </div>
+                      {entry.occurrences[0].sentenceZh && (
+                        <div style={{ color: '#4b5563', marginTop: '2px' }}>
+                          {entry.occurrences[0].sentenceZh}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="print-list-2col">
+              {pairedPrintRows.map(([left, right], rowIdx) => (
+                <div key={`print-row-${rowIdx}`} className="print-pair-row">
+                  <div className="print-pair-table">
+                    {[left, right].map((entry, colIdx) => (
+                      <div
+                        key={colIdx}
+                        className={`print-pair-cell ${
+                          colIdx === 0 ? 'print-pair-cell-left' : 'print-pair-cell-right'
+                        }`}
+                      >
+                        {entry && (
+                          <article className="print-vocab-card print-vocab-card-compact">
+                            <div>
+                              <span
+                                style={{
+                                  fontFamily: 'monospace',
+                                  fontSize: '8pt',
+                                  color: '#6b7280',
+                                  marginRight: '5px',
+                                }}
+                              >
+                                {String(rowIdx * 2 + colIdx + 1).padStart(2, '0')}
+                              </span>
+                              <span className="print-word-title print-word-title-sm">
+                                {entry.lemma}
+                              </span>
+                              {(entry.phoneticUs || entry.phoneticUk) && (
+                                <span
+                                  style={{
+                                    marginLeft: '6px',
+                                    fontSize: '7.8pt',
+                                    color: '#4b5563',
+                                  }}
+                                >
+                                  {entry.phoneticUs || entry.phoneticUk}
+                                </span>
+                              )}
+                            </div>
+
+                            {printMode === 'dictation' ? (
+                              <div className="print-dictation-line">默写释义：</div>
+                            ) : (
+                              <>
+                                {entry.occurrences[0] && (
+                                  <div className="print-context-box">
+                                    <strong style={{ color: '#b45309' }}>语境：</strong>
+                                    <span style={{ color: '#111827' }}>
+                                      {entry.occurrences[0].contextMeaning}
+                                    </span>
+                                    {entry.occurrences[0].isUncommonMeaning && (
+                                      <span
+                                        style={{
+                                          marginLeft: '4px',
+                                          fontSize: '7.2pt',
+                                          color: '#b45309',
+                                          fontWeight: 600,
+                                        }}
+                                      >
+                                        [熟词僻义]
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                                <div style={{ marginTop: '4px' }}>
+                                  {entry.comprehensiveMeanings.map((m, idx) => (
+                                    <div
+                                      key={idx}
+                                      style={{
+                                        fontSize: '8.3pt',
+                                        marginTop: '1.5px',
+                                        lineHeight: 1.38,
+                                        color: '#111827',
+                                      }}
+                                    >
+                                      <strong
+                                        style={{
+                                          fontFamily: 'monospace',
+                                          color: '#1d4ed8',
+                                          marginRight: '4px',
+                                        }}
+                                      >
+                                        {m.pos}
+                                      </strong>
+                                      <span>{m.definitions.join('；')}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </>
+                            )}
+                          </article>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

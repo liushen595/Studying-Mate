@@ -1,15 +1,48 @@
-/* Dedicated vector PDF / Print stylesheet for Vocabulary Book */
+/* Dedicated vector PDF / Print stylesheet for Vocabulary Book
+ * Architecture note:
+ * Chromium / Blink & WebKit print engines frequently break `break-inside: avoid`
+ * whenever an ancestor uses `display: flex` or `display: grid`.
+ * Therefore, during print we force ALL layout wrappers to `display: block`,
+ * and render a dedicated `.print-sheet` using pure block cards (1-col) or
+ * indivisible paired table rows (2-col) so NO vocabulary card is ever sliced across pages.
+ */
 @media print {
   @page {
     size: A4 portrait;
-    margin: 14mm 12mm;
+    margin: 12mm 11mm;
+  }
+
+  /* Force crisp paper light theme even when the user browses in dark mode */
+  :root,
+  .dark {
+    --bg-canvas: #ffffff !important;
+    --bg-surface: #ffffff !important;
+    --bg-surface-subtle: #f9fafb !important;
+    --bg-elevated: #ffffff !important;
+    --border-subtle: #e5e7eb !important;
+    --border-strong: #d1d5db !important;
+    --text-primary: #111827 !important;
+    --text-secondary: #4b5563 !important;
+    --text-muted: #6b7280 !important;
+    --accent: #2563eb !important;
+    --accent-soft: #eff6ff !important;
+    --vocab: #b45309 !important;
+    --vocab-soft: #fffbeb !important;
+    --answer: #047857 !important;
+    --answer-soft: #ecfdf5 !important;
   }
 
   html,
-  body {
+  body,
+  #root {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
     background: #ffffff !important;
     color: #111827 !important;
-    font-size: 10.5pt !important;
+    font-size: 9.5pt !important;
+    line-height: 1.45 !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
@@ -22,28 +55,135 @@
     display: block !important;
   }
 
+  /* Flatten ALL flex/grid shell ancestors to pure block flow for reliable pagination */
+  .print-root-shell,
+  .print-block-root,
   .print-container {
+    display: block !important;
     width: 100% !important;
     max-width: none !important;
+    min-height: 0 !important;
+    height: auto !important;
     margin: 0 !important;
     padding: 0 !important;
+    overflow: visible !important;
     box-shadow: none !important;
     border: none !important;
     background: #ffffff !important;
   }
 
-  .print-card {
+  .print-sheet {
+    display: block !important;
+    width: 100% !important;
+    color: #111827 !important;
+  }
+
+  .print-header {
+    display: block !important;
+    margin-bottom: 10px !important;
+    padding-bottom: 6px !important;
+    border-bottom: 1.5px solid #1f2937 !important;
+    break-after: avoid !important;
+    page-break-after: avoid !important;
+  }
+
+  .print-list-1col,
+  .print-list-2col {
+    display: block !important;
+    width: 100% !important;
+  }
+
+  /* Individual vocabulary card: guaranteed unbreakable block */
+  .print-vocab-card {
+    display: block !important;
+    box-sizing: border-box !important;
     break-inside: avoid !important;
     page-break-inside: avoid !important;
+    -webkit-column-break-inside: avoid !important;
+    overflow: visible !important;
     border: 1px solid #d1d5db !important;
-    border-radius: 8px !important;
+    border-radius: 7px !important;
     background: #ffffff !important;
+    padding: 8px 11px !important;
+    margin-bottom: 8px !important;
     box-shadow: none !important;
   }
 
-  .print-grid-2col {
-    display: grid !important;
-    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-    gap: 10px !important;
+  /* 2-Column paired row: each pair of cards is an atomic row that moves intact to the next page */
+  .print-pair-row {
+    display: block !important;
+    width: 100% !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    -webkit-column-break-inside: avoid !important;
+    margin-bottom: 8px !important;
+  }
+
+  .print-pair-table {
+    display: table !important;
+    width: 100% !important;
+    table-layout: fixed !important;
+    border-collapse: collapse !important;
+  }
+
+  .print-pair-cell {
+    display: table-cell !important;
+    width: 50% !important;
+    vertical-align: top !important;
+    box-sizing: border-box !important;
+  }
+
+  .print-pair-cell-left {
+    padding-right: 4px !important;
+  }
+
+  .print-pair-cell-right {
+    padding-left: 4px !important;
+  }
+
+  .print-vocab-card-compact {
+    margin-bottom: 0 !important;
+    padding: 7px 9px !important;
+  }
+
+  /* Print typography helpers */
+  .print-word-title {
+    font-family: Georgia, "Times New Roman", serif !important;
+    font-size: 13pt !important;
+    font-weight: 700 !important;
+    color: #111827 !important;
+    line-height: 1.25 !important;
+  }
+
+  .print-word-title-sm {
+    font-size: 11.5pt !important;
+  }
+
+  .print-context-box {
+    background: #fffbeb !important;
+    border: 1px solid #fde68a !important;
+    border-radius: 5px !important;
+    padding: 4px 7px !important;
+    margin-top: 5px !important;
+    font-size: 8.8pt !important;
+    line-height: 1.4 !important;
+  }
+
+  .print-sentence-box {
+    background: #f9fafb !important;
+    border-left: 2px solid #9ca3af !important;
+    border-radius: 4px !important;
+    padding: 4px 7px !important;
+    margin-top: 5px !important;
+    font-size: 8.5pt !important;
+    line-height: 1.4 !important;
+  }
+
+  .print-dictation-line {
+    margin-top: 14px !important;
+    padding-bottom: 10px !important;
+    border-bottom: 1px dashed #9ca3af !important;
+    font-size: 8.5pt !important;
+    color: #9ca3af !important;
   }
 }

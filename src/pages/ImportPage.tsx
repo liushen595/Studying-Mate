@@ -27,11 +27,15 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import type { ExamPaper, ExamSection } from '../types/exam';
+import type {
+  ExamPaper,
+  ExamSection,
+  VocabExtractDensity,
+  VocabExtractMode,
+} from '../types/exam';
 import { useSettingsStore } from '../stores/useSettingsStore';
 import { useTaskStore } from '../stores/useTaskStore';
 import {
-  assignSelectionToSectionLabel,
   CANONICAL_SECTION_PRESETS,
   estimateImageTokens,
   estimateTextTokens,
@@ -89,7 +93,15 @@ export function ImportPage() {
   const editPaperId = searchParams.get('paperId');
   const targetPaperId = editPaperId || draftId;
 
-  const { getAnalysisProvider, getVisionProvider, concurrency } = useSettingsStore();
+  const {
+    getAnalysisProvider,
+    getVisionProvider,
+    concurrency,
+    vocabExtractMode,
+    vocabExtractDensity,
+    setVocabExtractMode,
+    setVocabExtractDensity,
+  } = useSettingsStore();
   const { running } = useTaskStore();
 
   const analysisProvider = getAnalysisProvider();
@@ -109,11 +121,8 @@ export function ImportPage() {
   // Incremental section selection (draft IDs selected to run)
   const [selectedDraftIds, setSelectedDraftIds] = useState<Set<string>>(new Set());
 
-  // Textarea selection tracking for one-click section assignment
-  const [selectionRange, setSelectionRange] = useState<{ start: number; end: number }>({
-    start: 0,
-    end: 0,
-  });
+  // Track last cursor position inside textarea for predictable marker insertion
+  const cursorPosRef = useRef<number | null>(null);
 
   // Image OCR state (transient in-memory only; never persisted to IndexedDB after OCR)
   const [images, setImages] = useState<LocalImageItem[]>([]);
@@ -321,10 +330,10 @@ export function ImportPage() {
     });
   };
 
-  const syncSelection = () => {
+  const syncCursorPos = () => {
     const el = textareaRef.current;
     if (!el) return;
-    setSelectionRange({ start: el.selectionStart, end: el.selectionEnd });
+    cursorPosRef.current = el.selectionStart;
   };
 
   const updateRawTextAndInvalidateAiPreview = (nextText: string) => {
@@ -351,7 +360,7 @@ export function ImportPage() {
     requestAnimationFrame(() => {
       el.focus();
       el.setSelectionRange(start, start + replacement.length);
-      setSelectionRange({ start, end: start + replacement.length });
+      cursorPosRef.current = start + replacement.length;
     });
   };
 
@@ -374,34 +383,57 @@ export function ImportPage() {
     requestAnimationFrame(() => {
       el.focus();
       el.setSelectionRange(start, start + replacement.length);
-      setSelectionRange({ start, end: start + replacement.length });
+      cursorPosRef.current = start + replacement.length;
     });
   };
 
-  /** Assign currently selected text (or insert marker at cursor) to a canonical section label */
-  const handleAssignSelectionToLabel = (label: string) => {
+  /** Insert an explicit canonical section marker cleanly at the current cursor position (never wraps/alters surrounding paragraphs) */
+  const handleInsertSectionMarkerAtCursor = (label: string) => {
     const el = textareaRef.current;
-    const start = el ? el.selectionStart : selectionRange.start;
-    const end = el ? el.selectionEnd : selectionRange.end;
+    const rawPos =
+      el && document.activeElement === el
+        ? el.selectionStart
+        : cursorPosRef.current !== null
+          ? cursorPosRef.current
+          : el
+            ? el.selectionStart
+            : rawText.length;
+    const pos = Math.max(0, Math.min(rawText.length, rawPos));
 
-    if (end > start) {
-      const next = assignSelectionToSectionLabel(rawText, start, end, label);
-      setParsingMode('pre_parsed');
-      setForcedSectionType('auto');
-      updateRawTextAndInvalidateAiPreview(next);
-      setSelectionRange({ start: 0, end: 0 });
-      return;
-    }
-
-    // No selection: insert clean explicit marker at cursor position
-    const pos = start || rawText.length;
-    const before = rawText.slice(0, pos).replace(/\n+$/, '');
-    const after = rawText.slice(pos).replace(/^\n+/, '');
+    const beforeRaw = rawText.slice(0, pos);
+    const afterRaw = rawText.slice(pos);
     const marker = `=== [${label}] ===`;
-    const next = `${before ? `${before}\n\n` : ''}${marker}\n${after}`;
+
+    const beforeTrimmed = beforeRaw.replace(/[ \t]+$/, '');
+    const prefix =
+      beforeTrimmed.length === 0
+        ? ''
+        : beforeTrimmed.endsWith('\n\n')
+          ? beforeTrimmed
+          : beforeTrimmed.endsWith('\n')
+            ? `${beforeTrimmed}\n`
+            : `${beforeTrimmed}\n\n`;
+
+    const suffix =
+      afterRaw.length === 0
+        ? '\n'
+        : afterRaw.startsWith('\n')
+          ? afterRaw
+          : `\n${afterRaw}`;
+
+    const next = `${prefix}${marker}${suffix}`;
+    const nextCursorPos = prefix.length + marker.length + 1;
+
     setParsingMode('pre_parsed');
     setForcedSectionType('auto');
     updateRawTextAndInvalidateAiPreview(next);
+
+    requestAnimationFrame(() => {
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(nextCursorPos, nextCursorPos);
+      cursorPosRef.current = nextCursorPos;
+    });
   };
 
   const handleChangeDraftLabel = (draftIdx: number, newLabel: string) => {
@@ -581,6 +613,8 @@ export function ImportPage() {
       examType,
       sourceMode: existingPaper?.sourceMode || mode,
       parsingMode,
+      vocabExtractMode,
+      vocabExtractDensity,
       rawMarkedText: rawText,
       sectionsDraft: effectiveDrafts,
       selectedDraftIds: useIncrementalSelection ? selectedDraftIds : undefined,
@@ -607,7 +641,6 @@ export function ImportPage() {
   );
 
   const isEditingExisting = Boolean(existingPaper && existingPaper.sections.length > 0);
-  const selectedLen = Math.max(0, selectionRange.end - selectionRange.start);
 
   return (
     <div className="space-y-4">
@@ -641,8 +674,8 @@ export function ImportPage() {
           </h1>
           <p className="mt-0.5 text-xs text-text-secondary">
             {isEditingExisting
-              ? '可直接编辑下方原文、重分配题型或切到「图像追加 OCR」新增试卷页；未改动的已解析模块将自动复用。'
-              : '文本输入支持手动选区标签或 AI 智能切分；图像支持重排与增量 OCR（识别后图片不持久化）。'}
+              ? '可直接编辑下方原文、在光标处插入分段标签或切到「图像追加 OCR」新增试卷页；未改动的已解析模块将自动复用。'
+              : '文本输入支持光标处一键插入分段标签或 AI 智能切分，并可选 AI 自动总结/补充生词；图像支持重排与增量 OCR。'}
           </p>
         </div>
 
@@ -1125,34 +1158,22 @@ export function ImportPage() {
                 </div>
               </div>
 
-              {/* Interactive Text-Selection-to-Section Assignment Bar */}
-              <div
-                className={`rounded-xl border px-3 py-2.5 transition ${
-                  selectedLen > 0
-                    ? 'border-accent/45 bg-accent-soft/35'
-                    : 'border-border-subtle bg-surface-subtle/50'
-                }`}
-              >
+              {/* Cursor-Only Explicit Section Marker Insertion Bar */}
+              <div className="rounded-xl border border-border-subtle bg-surface-subtle/50 px-3 py-2.5">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-[11.5px] font-semibold text-text-primary mr-1">
-                    {selectedLen > 0
-                      ? `已选中 ${selectedLen} 字符 · 重新分配为：`
-                      : '选中文本后点击标签（或在光标处插入分段标记）：'}
+                    在光标处插入分段标签：
                   </span>
                   {CANONICAL_SECTION_PRESETS.map((preset) => (
                     <button
                       key={preset.label}
                       type="button"
-                      onMouseDown={(e) => e.preventDefault()} // Keep textarea selection intact!
-                      onClick={() => handleAssignSelectionToLabel(preset.label)}
-                      className={`rounded-lg border px-2 py-0.5 text-[11px] font-medium transition ${
-                        selectedLen > 0
-                          ? 'border-accent/40 bg-surface text-accent hover:bg-accent hover:text-white'
-                          : 'border-border-subtle bg-surface text-text-secondary hover:border-accent hover:text-accent'
-                      }`}
-                      title={`将选中内容分配为「${preset.label}」`}
+                      onMouseDown={(e) => e.preventDefault()} // Keep textarea focus & cursor intact!
+                      onClick={() => handleInsertSectionMarkerAtCursor(preset.label)}
+                      className="rounded-lg border border-border-subtle bg-surface px-2 py-0.5 text-[11px] font-medium text-text-secondary transition hover:border-accent hover:text-accent"
+                      title={`在当前光标位置插入「=== [${preset.label}] ===」分段标记`}
                     >
-                      {preset.shortLabel === preset.label ? preset.label : `${preset.label}`}
+                      {preset.label}
                     </button>
                   ))}
                 </div>
@@ -1162,9 +1183,9 @@ export function ImportPage() {
                 ref={textareaRef}
                 value={rawText}
                 onChange={(e) => updateRawTextAndInvalidateAiPreview(e.target.value)}
-                onSelect={syncSelection}
-                onKeyUp={syncSelection}
-                onMouseUp={syncSelection}
+                onClick={syncCursorPos}
+                onKeyUp={syncCursorPos}
+                onSelect={syncCursorPos}
                 onKeyDown={(e) => {
                   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'm') {
                     e.preventDefault();
@@ -1172,9 +1193,75 @@ export function ImportPage() {
                   }
                 }}
                 rows={mode === 'image' ? 17 : 15}
-                placeholder={`在此粘贴考研英语试卷文本（单篇或整套均可），生词请用 {{word}} 包裹。\n\n如果不确定预解析是否准确，可在下方选中文本后点击上方标准标签进行人工分配，或切换为「放弃本地预解析，交由 AI 自动切分整卷」。`}
+                placeholder={`在此粘贴考研英语试卷文本（单篇或整套均可），生词可用 {{word}} 包裹（未标也可开启下方「AI 自动总结/补充生词」）。\n\n如需手动划定题型边界，将光标定位到对应题型开头后点击上方标签插入 === [标签] ===；或切换为「放弃本地预解析，交由 AI 自动切分整卷」。`}
                 className="w-full rounded-2xl border border-border-subtle bg-surface-subtle/70 p-4 font-mono text-[13.5px] leading-relaxed text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
               />
+
+              {/* Vocabulary Extraction Mode Panel (Manual Only vs AI Auto-Summarize / Augment) */}
+              <div className="rounded-2xl border border-border-subtle bg-surface-subtle/60 p-4 space-y-2.5 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold text-text-primary">生词提取策略：</span>
+                    <div className="inline-flex rounded-lg border border-border-subtle bg-surface p-0.5">
+                      {(
+                        [
+                          { id: 'manual_only', label: `仅提取手标 {{生词}} (${markedVocabs.length})` },
+                          { id: 'ai_augment', label: 'AI 自动总结 / 在手标基础上补充' },
+                        ] as Array<{ id: VocabExtractMode; label: string }>
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setVocabExtractMode(opt.id)}
+                          className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition ${
+                            vocabExtractMode === opt.id
+                              ? 'bg-vocab text-white'
+                              : 'text-text-secondary hover:text-text-primary'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {vocabExtractMode === 'ai_augment' && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] text-text-muted">补充密度：</span>
+                      {(
+                        [
+                          { id: 'concise', label: '精简' },
+                          { id: 'balanced', label: '适中' },
+                          { id: 'comprehensive', label: '全面' },
+                        ] as Array<{ id: VocabExtractDensity; label: string }>
+                      ).map((d) => (
+                        <button
+                          key={d.id}
+                          type="button"
+                          onClick={() => setVocabExtractDensity(d.id)}
+                          className={`rounded-md border px-2 py-0.5 text-[11px] font-medium transition ${
+                            vocabExtractDensity === d.id
+                              ? 'border-vocab/40 bg-vocab-soft text-vocab'
+                              : 'border-border-subtle bg-surface text-text-secondary hover:text-text-primary'
+                          }`}
+                        >
+                          {d.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <p className="text-[11.5px] leading-relaxed text-text-secondary">
+                  {vocabExtractMode === 'ai_augment'
+                    ? markedVocabs.length > 0
+                      ? `已保留你标记的 ${markedVocabs.length} 个生词，解析时 AI 将在此基础上自动补充遗漏的考研高频词、短语搭配与熟词僻义，并在阅读视图中自动加上可点击下划线（不会修改你的原始文本）。`
+                      : '当前未手动标记 {{生词}}，解析时 AI 将通读各题型原文自动总结考研核心生词与熟词僻义，并在阅读视图与生词本中同步展示。'
+                    : markedVocabs.length > 0
+                      ? `仅提取你手动或红笔框选的 ${markedVocabs.length} 个 {{生词}}（100% 精确零遗漏）；若觉得框选不够多，可切换到「AI 自动总结 / 补充」。`
+                      : '当前未检测到 {{生词}} 标记。如果你没有用红笔框词，建议切换到右侧「AI 自动总结 / 在手标基础上补充」让模型自动提炼核心词汇。'}
+                </p>
+              </div>
 
               {/* Detected Marked Vocab Chips */}
               {markedVocabs.length > 0 && (

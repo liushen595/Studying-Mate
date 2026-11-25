@@ -218,7 +218,7 @@ export function IslandShell({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <div className="min-h-screen bg-canvas text-text-primary">
+    <div className="print-root-shell min-h-screen bg-canvas text-text-primary">
       {/* Mobile Topbar */}
       <header className="no-print sticky top-0 z-30 flex items-center justify-between border-b border-border-subtle bg-surface/90 px-4 py-3 backdrop-blur-md lg:hidden">
         <Link to="/" className="flex items-center gap-2 font-semibold text-sm">
@@ -261,7 +261,7 @@ export function IslandShell({ children }: { children: React.ReactNode }) {
       )}
 
       {/* Desktop Island Layout */}
-      <div className="mx-auto flex max-w-[1600px] gap-4 p-3 sm:p-4">
+      <div className="print-block-root mx-auto flex max-w-[1600px] gap-4 p-3 sm:p-4">
         <aside
           className={`no-print hidden lg:block shrink-0 sticky top-4 h-[calc(100vh-2rem)] island transition-all duration-200 ${
             sidebarCollapsed ? 'w-[68px]' : 'w-[252px]'

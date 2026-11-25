@@ -445,63 +445,6 @@ export function lockSectionsWithExplicitMarkers(drafts: ParsedSectionDraft[]): s
 }
 
 /**
- * Assigns a user-selected substring `[selStart, selEnd]` in `rawText` to a canonical section label
- * by inserting explicit `=== [targetLabel] ===` boundaries cleanly.
- */
-export function assignSelectionToSectionLabel(
-  rawText: string,
-  selStart: number,
-  selEnd: number,
-  targetLabel: string,
-): string {
-  if (selStart >= selEnd) return rawText;
-  const normalized = rawText.replace(/\r\n/g, '\n');
-
-  // Expand selection cleanly to full lines without swallowing the next line when selEnd sits right at a line start
-  let start = selStart;
-  while (start > 0 && normalized[start - 1] !== '\n') {
-    start--;
-  }
-  let end = selEnd;
-  if (end > start && normalized[end - 1] !== '\n') {
-    while (end < normalized.length && normalized[end] !== '\n') {
-      end++;
-    }
-  }
-
-  const before = normalized.slice(0, start);
-  let selected = normalized.slice(start, end).trim();
-  const after = normalized.slice(end).trim();
-
-  // If the first line of `selected` is already an explicit `=== [...] ===` marker, replace it
-  const selectedLines = selected.split('\n');
-  if (selectedLines.length > 0 && EXPLICIT_MARKER_REGEX.test(selectedLines[0].trim())) {
-    selected = selectedLines.slice(1).join('\n').trim();
-  }
-
-  // Determine the section label that `before` belonged to so trailing unassigned text keeps a clean boundary
-  let trailingMarker = '';
-  if (after.length > 0) {
-    const firstAfterLine = after.split('\n')[0].trim();
-    const afterAlreadyStartsWithBoundary =
-      EXPLICIT_MARKER_REGEX.test(firstAfterLine) ||
-      (SECTION_HEADER_REGEX.test(firstAfterLine) && !/[.?!。？！]$/.test(firstAfterLine));
-
-    if (!afterAlreadyStartsWithBoundary) {
-      const preDrafts = splitPaperIntoSections(before);
-      const inheritedLabel = preDrafts[preDrafts.length - 1]?.title || '通用精读';
-      trailingMarker = `\n\n=== [${inheritedLabel}] ===\n`;
-    } else {
-      trailingMarker = '\n\n';
-    }
-  }
-
-  const beforeClean = before.replace(/\n+$/, '');
-  const prefix = beforeClean ? `${beforeClean}\n\n` : '';
-  return `${prefix}=== [${targetLabel}] ===\n${selected}${trailingMarker}${after}`.trim();
-}
-
-/**
  * Updates the section label/type of a specific draft index directly inside `rawText`.
  */
 export function updateSectionMarkerInRawText(
@@ -619,6 +562,7 @@ export function extractVocabWithContext(
       if (!entry) {
         entry = {
           key,
+          source: 'user',
           surfaceForms: [surfaceForm],
           occurrences: [],
         };
@@ -671,4 +615,167 @@ function findContainingSentence(text: string, startIdx: number, endIdx: number):
     .replace(/\{\{([^{}]+?)\}\}/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Verifies AI-discovered surfaceForms against the actual section rawText using word boundaries,
+ * extracting verbatim containing sentences so ZERO hallucinated words enter the vocabulary book.
+ */
+export function extractNamedVocabOccurrences(
+  section: { id: string; title: string; rawText: string },
+  candidates: Array<{ surfaceForm: string; lemma?: string }>,
+  existingKeys: Set<string>,
+): { items: ExtractedVocabItem[]; matchedForms: string[] } {
+  const cleanText = section.rawText
+    .replace(/<\/?u>/gi, '')
+    .replace(/\{\{([^{}]+?)\}\}/g, '$1');
+
+  const items: ExtractedVocabItem[] = [];
+  const matchedForms: string[] = [];
+  const localSeen = new Set<string>(existingKeys);
+
+  for (const cand of candidates) {
+    const form = cand.surfaceForm.trim();
+    if (!form || form.length < 2 || form.length > 60) continue;
+    const key = form.toLowerCase().replace(/\s+/g, ' ');
+    const lemmaKey = cand.lemma?.trim().toLowerCase().replace(/\s+/g, ' ');
+    if (localSeen.has(key) || (lemmaKey && localSeen.has(lemmaKey))) continue;
+
+    // Build whole-word boundary pattern (allows spaces/hyphens/apostrophes inside multi-word phrases)
+    const pattern = new RegExp(`(?<![A-Za-z])${escapeRegExp(form)}(?![A-Za-z])`, 'gi');
+    const occurrences: ExtractedVocabItem['occurrences'] = [];
+    const surfaceSet = new Set<string>();
+    let match: RegExpExecArray | null;
+
+    while ((match = pattern.exec(cleanText)) !== null) {
+      const actualSurface = match[0];
+      surfaceSet.add(actualSurface);
+      const sentenceEn = findContainingSentence(
+        cleanText,
+        match.index,
+        match.index + actualSurface.length,
+      );
+      if (!occurrences.some((o) => o.sentenceEn === sentenceEn)) {
+        occurrences.push({
+          sectionId: section.id,
+          sectionTitle: section.title,
+          surfaceForm: actualSurface,
+          sentenceEn,
+        });
+      }
+      // Keep at most 2 representative occurrences per section for AI-supplemented words
+      if (occurrences.length >= 2) break;
+    }
+
+    if (occurrences.length === 0) continue;
+
+    localSeen.add(key);
+    if (lemmaKey) localSeen.add(lemmaKey);
+
+    const formsArr = Array.from(surfaceSet);
+    matchedForms.push(...formsArr);
+    items.push({
+      key,
+      source: 'ai',
+      surfaceForms: formsArr,
+      occurrences,
+    });
+  }
+
+  return { items, matchedForms };
+}
+
+/**
+ * Safely wraps AI-supplemented surfaceForms with `{{...}}` in plain-text spans of an English string,
+ * skipping any existing `{{...}}`, `[[...]]`, or `<u>` / `</u>` tags.
+ */
+export function injectVocabMarkersIntoText(text: string, surfaceForms: string[]): string {
+  if (!text || surfaceForms.length === 0) return text;
+
+  const uniqueForms = Array.from(
+    new Set(surfaceForms.map((s) => s.trim()).filter((s) => s.length >= 2)),
+  ).sort((a, b) => b.length - a.length);
+  if (uniqueForms.length === 0) return text;
+
+  const wordRegex = new RegExp(
+    `(?<![A-Za-z])(${uniqueForms.map(escapeRegExp).join('|')})(?![A-Za-z])`,
+    'gi',
+  );
+
+  // Split out protected tokens so we NEVER nest {{}} inside {{}} or break [[1]] / <u> tags
+  const protectedSplit = /(\{\{[^{}]+?\}\}|\[\[\s*\d+\s*\]\]|<\/?u>)/gi;
+  return text
+    .split(protectedSplit)
+    .map((segment) => {
+      if (!segment) return '';
+      if (
+        (segment.startsWith('{{') && segment.endsWith('}}')) ||
+        (segment.startsWith('[[') && segment.endsWith(']]')) ||
+        /^<\/?u>$/i.test(segment)
+      ) {
+        return segment;
+      }
+      return segment.replace(wordRegex, '{{$1}}');
+    })
+    .join('');
+}
+
+/**
+ * Injects `{{...}}` markers for AI-supplemented vocabulary into a parsed ExamSection's rendered English text
+ * so AI-added words also get clickable amber underlines and Word Popover Cards in the Reading View.
+ */
+export function injectVocabMarkersIntoSection(
+  section: ExamSection,
+  surfaceForms: string[],
+): ExamSection {
+  if (surfaceForms.length === 0) return section;
+  const wrap = (t: string) => injectVocabMarkersIntoText(t, surfaceForms);
+
+  if (section.type === 'cloze') {
+    return {
+      ...section,
+      paragraphs: section.paragraphs.map((p) => ({ ...p, en: wrap(p.en) })),
+    };
+  }
+  if (section.type === 'reading') {
+    return {
+      ...section,
+      paragraphs: section.paragraphs.map((p) => ({ ...p, en: wrap(p.en) })),
+    };
+  }
+  if (section.type === 'new_type') {
+    return {
+      ...section,
+      blocks: section.blocks.map((b) => ({ ...b, en: wrap(b.en) })),
+      optionBank: section.optionBank.map((o) => ({ ...o, en: wrap(o.en) })),
+    };
+  }
+  if (section.type === 'translation') {
+    return {
+      ...section,
+      contextPassage: section.contextPassage?.map((p) => ({ ...p, en: wrap(p.en) })),
+      items: section.items.map((it) => ({ ...it, originalEn: wrap(it.originalEn) })),
+    };
+  }
+  if (section.type === 'writing') {
+    return {
+      ...section,
+      tasks: section.tasks.map((task) => ({
+        ...task,
+        promptEn: wrap(task.promptEn),
+        sampleEssay: {
+          ...task.sampleEssay,
+          paragraphs: task.sampleEssay.paragraphs.map((p) => ({ ...p, en: wrap(p.en) })),
+        },
+      })),
+    };
+  }
+  return {
+    ...section,
+    paragraphs: section.paragraphs.map((p) => ({ ...p, en: wrap(p.en) })),
+  };
 }

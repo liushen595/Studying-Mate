@@ -1,7 +1,7 @@
 # Studying-Mate（考研英语 AI 精读与解析助手）完整架构设计文档
 
-> **文档版本**：v1.3（新增双模分段与两套提示词体系、标准考研标签体系、跨题型噪声隔离策略、全量/增量编辑重析闭环、图片重排与 OCR 后不持久化策略）  
-> **日期**：2026-11-23  
+> **文档版本**：v1.4（新增新题型四子类全适配、AI 自动总结/补充生词模式、光标处精准插入分题标签、PDF 打印防跨页截断架构、WebDAV 备份/双向同步与基于 Web Crypto AES-256-GCM 的 API Key 端到端加密同步）  
+> **日期**：2026-11-25  
 > **部署目标**：Cloudflare Pages（纯前端静态站点）  
 > **生产域名**：`https://studingmate.wanderflare.net`  
 > **开发环境**：WSL2（Node.js `v24.18.0` / `pnpm`）+ Vite Dev Server（`http://localhost:5173`）
@@ -331,21 +331,23 @@ flowchart LR
 - **多图重排与增量 OCR**：支持单次上传多页真题照片（拖拽排序、前移/后移、顺时针 90° 旋转、删除单页、剪贴板 Ctrl+V 粘贴），按页码顺序分批 OCR 后自动拼接；支持在已有稿件上**继续追加新照片并仅对新增页做增量 OCR**（不重复识别已识别页）。
 - **OCR 后图片不持久化策略**：上传的图片仅在浏览器当前会话内存中用于预览、重排与 OCR 校对；一旦完成 OCR 并进入解析/保存，**不再将图片 Blob 持久化到 IndexedDB**（同时清理历史遗留关联图片），彻底释放本地存储空间。
 
-### 5.3 OCR 中间校对、手动选区重分配与增量编辑工作台
+### 5.3 OCR 中间校对、光标处插入分段标记与增量编辑工作台
 
-OCR 完成后或复用已有试卷原文进入 `/import?paperId=<id>` 时，工作台提供完整的「校对 → 题型重分配 → 增量解析」闭环：
+OCR 完成后或复用已有试卷原文进入 `/import?paperId=<id>` 时，工作台提供完整的「校对 → 分段边界标记 → 生词策略选择 → 增量解析」闭环：
 
 1. **左右分屏布局（移动端上下切换）**：
    - **左侧岛卡片**：高清原图查看器（仅当前会话带图时展示），支持滚轮缩放、拖拽平移、页面缩略图切换，方便对照检查红框是否漏识。
    - **右侧岛卡片**：带快捷标记工具栏的纯文本编辑器：
      - **生词标记**：选中单词按 `Ctrl/Cmd + M` 或点击按钮一键包裹/取消 `{{...}}`。
      - **翻译划线句标记**：选中 Part C 待译句子一键包裹/取消 `<u>...</u>`。
-     - **选中文本快捷分配题型（核心稳定性设计）**：在编辑器中选中任意文本片段，侧边/顶部「选区分配条」即时亮起，用户可一键将其标记为标准考研题型标签（自动插入显式分隔标记 `=== [标准标签] ===`，彻底锁定边界而不受启发式正则误判）：
+     - **光标处精准插入标准题型标签（核心稳定性设计）**：将编辑器光标定位到对应题型开头后，点击顶部快捷栏按钮，直接在光标所在位置干净插入显式分隔标记 `=== [标准标签] ===`（绝不包裹选区或改写上下段落，彻底避免选区越界污染），锁定边界而不受启发式正则误判：
        - `Section I Use of English`（完形填空）
        - `Text1` / `Text2` / `Text3` / `Text4`（传统阅读理解）
        - `Section II·Part B`（新题型）
        - `Section II·Part C Translation`（翻译题）
        - `Section III·Writing·Part A` / `Section III·Writing·Part B`（写作题）
+       - `通用精读`（普通短文）
+   - **生词提取策略选择**：支持在「**仅提取手标 `{{生词}}`**」与「**AI 自动总结 / 在手标基础上补充**」（含精简 / 适中 / 全面三档密度）之间切换，解决未用红笔框词或框选不够充分的场景。
    - **交互式分段控制面板**：支持在「**本地预解析（可手动改题型/合并/勾选增量范围）**」与「**放弃预解析，交由 AI 自动切分整卷**」两种模式间切换。
 2. **单一文本真源与全量/增量再解析**：
    - `ExamPaper.rawMarkedText` 作为整套试卷的唯一原文真源持久保存；用户随时可从精读页返回 `/import?paperId=<id>` 修改错漏、调整题型归属或追加新题目文本/新图片。
@@ -375,7 +377,7 @@ OCR 完成后或复用已有试卷原文进入 `/import?paperId=<id>` 时，工�
 | :--- | :--- | :--- | :--- |
 | **完形填空 (Cloze)** | `cloze` | ① **已填空全文展示**：将正确答案直接填入原文对应空位（以柔和翠绿圆角胶囊显示 `[1] however`）；若原卷已做完并订正，严格采用卷面订正答案。<br>② **选项随行查阅**：点击任意填空胶囊或展开「选项对照面板」，可查看该空 `A / B / C / D` 四个原选项（标出正确答案及各干扰项简要中文释义）。<br>③ **全文双语翻译**：给出代入正确答案后的流畅中文译文，逐段对照。 | 否（保持精读界面清爽） |
 | **传统阅读理解 (Reading)** | `reading` | ① **逐段双语精读**：支持「逐段对照 / 宽屏双栏对照 / 纯英文沉浸」三种视图切换。<br>② **题目与答案区**：文章下方紧凑收纳每篇对应的 5 道选择题，展示题干译文、各选项及正确选项高亮（尊重卷面订正答案），默认不堆砌冗余长解析。 | 否 |
-| **新题型 (七选五 / 排序 / 小标题)** | `new_type` | ① **回填式完整文章**：直接将正确的句子或小标题回填到文章对应的 `[41]`–`[45]` 空位中，用浅色左边框引用块区分「回填句（标明选项字母如 `[E]`）」与「原文段落」，并附带译文。<br>② **完整选项池抽屉**：文末或侧边可展开 `A–G` 完整选项列表（明确标注「已选用 → 41空」与「多余干扰项」），方便复盘上下文衔接逻辑。 | 否 |
+| **新题型 (七选五 / 排序 / 小标题 / 多项对应)** | `new_type` | ① **四子类差异化全文还原**：严格区分 `seven_choose_five`（七选五回填）、`ordering`（按正确逻辑顺序重排全文，区分题目已给出固定段 `fixedOption` 与排定段）、`heading_matching`（小标题置顶对应段落）与 `info_matching`（英语二多项对应左栏对象 `slotPrompt` + 匹配项）。<br>② **完整选项池抽屉**：文末展开 `[A]`–`[G]`/`[H]` 完整选项列表（明确区分「已选用空位/题号」「题目已给出固定段 `isFixed`」与「多余干扰项」），选项内嵌 `MarkedTextRenderer` 支持点击生词查词。 | 否 |
 | **翻译题 (Translation)** | `translation` | ① **上下文段落展示**：若为英语一，展示带下划线高亮（`<u>...</u>`）的上下文参考段落，清晰标出哪 5 句是待译划线句。<br>② **结构化句子解剖卡片（核心特色）**：**严禁把模型大段纯文本解析直接糊在页面上**！按 JSON 结构渲染为清晰的视觉模块：<br>  - **原句展示**（保留 `{{生词}}` 下划线可点击查词）<br>  - **主干提取条**：清晰拆出 `主语 (S)` / `谓语 (V)` / `宾语或表语 (O/P)`<br>  - **修饰与从句结构列表**：每条成分标注类型徽章（如 `定语从句` / `插入语` / `过去分词作后置定语` / `倒装结构`）、对应英文片段、修饰对象及局部直译<br>  - **译文打磨对比**：直译拆解 → 考场地道意译（参考译文）<br>  - **得分点与避坑提示**：2–3 条精炼要点（如词性转换、代词指代还原） | **是（核心结构化展示）** |
 | **写作题 (Writing · Part A / Part B)** | `writing` | ① **审题与题目卡片**：展示英文 Directions、中文审题翻译、文体/语域与字数要求徽章；若为图画/图表作文，展示 OCR 提取的画面/数据核心摘要。<br>② **写作指导（Guidance）**：核心立意切入点、分段落谋篇大纲（每段要点与建议词数）、考场得分点与避坑提示。<br>③ **高分范文（Sample Essay）**：支持「逐段对照 / 双栏对照 / 纯英文」阅读、一键复制范文、词数标注与范文总评。<br>④ **好词好句积累库**：双栏卡片呈现「高分好词与高级替换（含可替换的基础词与例句）」与「亮点好句与万能句型模板（含句式标签、译文与可套用场景）」。 | 否（专注写作谋篇、范文与好词好句） |
 | **其他普通段落** | `general` | 优雅兜底：提供段落双语翻译与生词划线交互，保证用户输入任意英语短文都能正常解析。 | 否 |
@@ -394,15 +396,15 @@ OCR 完成后或复用已有试卷原文进入 `/import?paperId=<id>` 时，工�
 
 每套试卷自动生成专属生词本，同时提供全局「跨卷生词汇总」入口：
 
-- **筛选与排序**：按题型/篇目筛选（全部 / 完形 / Text 1–4 / 新题型 / 翻译）、关键词搜索、排序（按文中出现顺序 / 字母 A–Z）。
+- **筛选与排序**：按题型/篇目筛选、按生词来源筛选（全部 / 手标生词 / AI 补充）、关键词搜索、排序（按文中出现顺序 / 字母 A–Z）。
 - **背词自测模式（Recall Mode）**：一键开启「遮挡中文释义」，卡片释义模糊隐藏，点击单张卡片或悬停揭晓答案，方便考前快速过词。
 - **原句回溯**：每张生词卡附带**试卷原句摘录（高亮该词）+ 原句中文译文**，并可点击跳回文章对应段落。
-- **打印与导出 PDF（重点功能）**：
+- **打印与导出 PDF（重点防截断优化）**：
   - 点击 **「打印 / 导出 PDF」** 弹出排版预览设置，提供三种打印模板：
-    1. **完整精读生词版**：单词 + 音标 + 本文语境义 + 全面释义 + 搭配 + 原句。
+    1. **完整精读生词版**：A4 单栏排版（单词 + 音标 + 本文语境义 + 全面释义 + 搭配 + 原句）。
     2. **紧凑双栏背词版**：A4 双栏高密度排版，省纸适合装订随身背诵。
-    3. **默写自测版**：仅保留英文单词、音标与书写横线，隐藏中文释义，打印后可直接自测。
-  - 底层通过专用 `@media print` 样式表调用 `window.print()`（用户直接选「另存为 PDF」或连接打印机），所有卡片设置 `break-inside: avoid` 防止跨页腰斩，保留完美中英文矢量字体。
+    3. **默写自测版**：双栏仅保留英文单词、音标与书写横线，隐藏中文释义，打印后可直接自测。
+  - **零跨页腰斩排版架构**：浏览器打印引擎在祖先节点为 `display: flex` / `display: grid` 时常导致 `break-inside: avoid` 失效；因此专用 `@media print` 样式表（`print.css`）在打印态将外层壳容器统一压平为纯 `display: block` 并强制纸墨浅色主题令牌；`VocabBookView` 独立渲染打印专用 `.print-sheet`——单栏采用纯块级不可分割卡片，**双栏与默写模式将每 2 张卡片封装为原子的 `.print-pair-row`（`break-inside: avoid` + 定宽双列 `table`）**，整行空间不足时整体顺延至下一页，彻底消除卡片跨页截断。
   - 附带轻量级纯前端导出：**Markdown 导出**、**CSV / Anki 制卡 TSV 导出**。
 
 ---
@@ -424,7 +426,10 @@ OCR 完成后或复用已有试卷原文进入 `/import?paperId=<id>` 时，工�
 2. **Step 1 — 分段题型解析（含两套对应 Prompt 与跨题型噪声隔离）**：
    - 针对「使用预解析（`pre_parsed`）」与「不使用预解析 / AI 智能切分（`ai_segmented`）」提供两套特化 Prompt 契约，均内置**跨题型噪声隔离规则**：明确告知模型各题型互斥特征，忽略混入的异题型标记（如阅读/完形/新题型/写作中误标的 `<u>...</u>` 必须剥离，不可当成翻译划线句；渲染层同步执行 `allowUnderline` 硬拦截）。
    - 支持全量与增量解析：未改动且已完成的模块可直接复用，支持单独重析任意已完成或失败模块。
-3. **Step 2 — 全面生词词典批处理（每批 18 词，支持增量合并）**：
+3. **Step 1.5（可选）— 统一 AI 自动总结 / 补充生词（`ai_augment` 模式）**：
+   - 当用户开启「AI 自动总结 / 在手标基础上补充」时，调用统一词汇甄选 Prompt `buildAutoVocabDiscoveryPrompt`：未标任何词时自动总结全段核心词；已有手标词时严格去重并补充遗漏的考研高频词、固定搭配与熟词僻义。
+   - 返回的词形经由本地 `extractNamedVocabOccurrences` 做词边界校验与真实原句提取（过滤幻觉词），并通过 `injectVocabMarkersIntoSection` 为渲染层英文注入 `{{...}}` 下划线（**不污染持久化的 `rawMarkedText`**），最终合并进入 Step 2 词典批处理，条目打上 `source: 'ai'` 标识。
+4. **Step 2 — 全面生词词典批处理（每批 18 词，支持增量合并）**：
    - 仅对本次新增或重新解析模块涉及的未收录/变更生词调用词典批处理，增量合并至 `paper.vocabulary`。
    - **JSON 容错机制**：优先启用供应商原生 Structured Outputs → 降级 `json_object` → 提取 Markdown 代码块 → `jsonrepair` 修复 → `Zod` 强校验。
 
@@ -519,15 +524,16 @@ export interface ReadingSection extends BaseSection {
   }>;
 }
 
-// 3.3 新题型（七选五 / 排序 / 小标题匹配）
+// 3.3 新题型（七选五 / 排序 / 小标题匹配 / 多项对应）
 export interface NewTypeSection extends BaseSection {
   type: 'new_type';
-  subType: 'seven_choose_five' | 'ordering' | 'heading_matching';
-  // 按阅读顺序排列的混合块：原文段落 与 已回填的答案块 交替呈现
+  subType: 'seven_choose_five' | 'ordering' | 'heading_matching' | 'info_matching';
+  // 按阅读顺序排列的混合块：原文段落 与 已回填/已排定/已匹配的答案块 交替或成组呈现
   blocks: Array<
     | {
         kind: 'paragraph';
         id: string;
+        fixedOption?: string;            // 排序题中题目原定固定段标识（如 "C"）
         en: string;
         zh: string;
       }
@@ -536,15 +542,17 @@ export interface NewTypeSection extends BaseSection {
         number: number;                  // 题号如 41..45
         selectedOption: string;          // 如 "E"
         answerSource: 'paper_marked' | 'llm_solved';
-        en: string;                      // 该选项的完整英文句子/小标题
+        slotPrompt?: string;             // 多项对应题左栏人物/主题名（可选）
+        en: string;                      // 该选项的完整英文句子/段落/小标题/匹配项
         zh: string;                      // 该选项的中文译文
       }
   >;
-  optionBank: Array<{                    // 完整选项池（含未选中的多余干扰项）
-    label: string;                       // "A" .. "G"
+  optionBank: Array<{                    // 完整选项池（含多余干扰项或排序题固定段）
+    label: string;                       // "A" .. "G" / "H"
     en: string;
     zh: string;
-    usedInSlot: number | null;           // 若被选中则为题号（如 41），干扰项为 null
+    usedInSlot: number | null;           // 若被选中则为题号（如 41），否则为 null
+    isFixed?: boolean;                   // 排序题中标记是否为已给出固定段（非干扰项）
   }>;
 }
 
@@ -850,17 +858,26 @@ export interface VocabEntry {
 
 ---
 
-## 9. 本地数据持久化与安全隐私策略
+## 9. 本地数据持久化、WebDAV 同步与安全隐私策略
 
 1. **IndexedDB 数据库设计（Dexie.js `StudyingMateDB`）**：
-   - `papers` 表：索引 `id, updatedAt, status, examType`，存储完整 `ExamPaper` JSON。
-   - `images` 表：索引 `id, paperId, order`，存储预处理后的原图 `Blob` 与轻量缩略图 `Blob`（与 `papers` 分表避免列表加载卡顿；删除试卷时级联清理释放磁盘空间）。
-   - `tasks` 表：存储进行中/中断的解析任务断点（支持页面意外刷新后提示「恢复未完成解析」，避免重复消耗 API Token）。
-2. **数据导入与导出（跨设备迁移）**：
-   - 因纯前端无云同步，在设置页提供 **「导出全部学习数据（`.json` 备份，默认不含 API Key）」** 与 **「导入恢复」** 功能，方便在电脑与平板间迁移学习记录。
-3. **API Key 安全声明与保护**：
-   - API Key 仅存在当前浏览器的 `localStorage`（支持可选的 Web Crypto API 主密码加密），输入框默认掩码展示，绝不打印到控制台或随备份文件泄露。
-   - 在设置页用清晰温和的提示告知用户：「您的 API Key 仅存储在本地浏览器并直接发送至所选官方供应商，不会经过任何第三方服务器；请勿在公共电脑保存 Key。」
+   - `papers` 表：索引 `id, updatedAt, createdAt, status, examType`，存储完整 `ExamPaper` JSON（含 `rawMarkedText`、`sections`、`vocabulary` 与 `vocabExtractMode`）。
+   - `images` 表：保留兼容清理通道；遵循「OCR 后不持久化图片」策略，进入保存/解析事务时自动清理关联图片 Blob，避免占用本地磁盘空间。
+2. **本地 JSON 备份与 WebDAV 云端备份 / 双向智能同步**：
+   - **统一 v2 备份格式（`StudyingMateBackupBundle`）**：同时打包全部试卷、生词本与非敏感应用/模型设置（主题、阅读排版、并发数、生词提取策略、双槽位模型路由、各供应商 Base URL / Model ID / 思考与采样参数，自动剔除所有明文 API Key 与 WebDAV 密码），向下兼容旧版 v1 导入。
+   - **纯前端 WebDAV 客户端（`src/lib/sync/webdav.ts`）**：
+     - 路径规范化与 URL 安全拼接（处理反斜杠、多余斜杠、`..` 清洗及 UTF-8 Basic Auth 编码）；
+     - 连通性测试（`PROPFIND` 探测根路径与目标目录、CORS/401/403/404/409 精准诊断提示）；
+     - 缺失目录自动处理：按路径层级自顶向下递归 `MKCOL` 创建不存在的备份目录；
+     - 支持上传主备份（`studying-mate-latest.json`）+ 可配置保留份数的时间戳历史快照自动轮转清理 + 按 `updatedAt` 双向智能合并同步。
+3. **API Key 端到端加密同步（可选 E2EE 保险库）与安全边界**：
+   - **本地存储与默认策略**：API Key 仅存在本机浏览器 `localStorage`，WebDAV 密码仅存本机。默认关闭云端 Key 同步，普通备份与设置同步自动剥离全部 Key 并保留目标设备已有 Key。
+   - **Web Crypto E2EE 保险库（`src/lib/sync/crypto-vault.ts`）**：用户可按需开启「API Key 端到端加密同步」并设置独立同步主口令（≥ 8 位，严禁复用 WebDAV 密码）：
+     - 密钥派生：`PBKDF2-HMAC-SHA256`（`600,000` 次迭代）+ 每次加密随机 `16 bytes salt`；
+     - 认证加密：`AES-256-GCM` + 每次加密随机 `12 bytes iv` + `128-bit` Auth Tag，并将版本/KDF/算法元数据写入 `AAD` 防降级与防篡改；
+     - **仅主备份携带**：密文封装为独立顶层字段 `apiKeysVault`，仅写入 `studying-mate-latest.json`，历史快照严格剔除 `apiKeysVault` 以减小凭证暴露面；
+     - **口令会话生命周期**：同步主口令仅暂存当前标签页 `sessionStorage`（关闭标签页即清除，绝不写 `localStorage` 或上传云端）；
+     - **故障隔离与双向同步护栏**：试卷、生词本与普通设置恢复不受加密保险库影响（口令缺失或错误时原地弹出解锁框供重试或跳过）；开启密钥同步执行双向同步时，若云端 `apiKeysVault` 解密失败会先中止回推以防覆盖云端密钥，未开启密钥同步的设备回推时自动保留云端原有 `apiKeysVault`。
 
 ---
 
@@ -895,34 +912,37 @@ Studying-Mate/
 │   │   │   └── json-recovery.ts     # jsonrepair + Zod 强校验工具
 │   │   ├── prompts/
 │   │   │   ├── ocr.ts               # Stage 1 OCR + 红框/订正答案 Prompt
-│   │   │   ├── sections.ts          # 完形/阅读/新题型/翻译 Prompt + JSON Schema
-│   │   │   └── vocab.ts             # 全面生词本 Prompt + JSON Schema
+│   │   │   ├── sections.ts          # 完形/阅读/新题型四子类/翻译/写作 Prompt + Zod Schema
+│   │   │   └── vocab.ts             # 全面生词本 + AI 自动总结/补充生词 Prompt
 │   │   ├── pipeline/
-│   │   │   ├── pre-parser.ts        # 本地正则提取 {{vocab}} + 题型自动切分
+│   │   │   ├── pre-parser.ts        # 本地正则提取 {{vocab}} + 题型切分 + AI 生词校验注入
 │   │   │   ├── image-prep.ts        # Canvas 缩放/EXIF 方向修正/Base64 编码
-│   │   │   └── analyzer.ts          # 分段编排调度器 + 断点续传 + 并发控制
+│   │   │   └── analyzer.ts          # 分段编排调度器 + AI 生词补充 + 增量解析 + 并发控制
+│   │   ├── sync/
+│   │   │   ├── backup.ts            # v2 统一备份打包（含设置同步）与故障隔离恢复
+│   │   │   ├── crypto-vault.ts      # PBKDF2-SHA256 + AES-256-GCM API Key 端到端加密保险库
+│   │   │   └── webdav.ts            # 纯前端 WebDAV 客户端（路径规范/递归MKCOL/连通测试/双向同步）
 │   │   └── db/
 │   │       └── index.ts             # Dexie.js IndexedDB Schema 与 CRUD
 │   ├── stores/
-│   │   ├── useSettingsStore.ts      # 供应商配置、双槽位模型、主题与阅读偏好
+│   │   ├── useSettingsStore.ts      # 供应商配置、双槽位模型、WebDAV、生词策略与主题偏好
 │   │   └── useTaskStore.ts          # 当前 OCR / 解析流式进度与思考过程缓冲
 │   ├── components/
-│   │   ├── layout/                  # IslandShell, Sidebar, Topbar, ThemeToggle
-│   │   ├── import/                  # TextEditorWithVocab, ImageDropzone, OcrSplitReviewer
+│   │   ├── common/                  # ExecutionTimeline, ErrorDiagnosticCard
+│   │   ├── layout/                  # IslandShell（含打印态块级流兼容）
+│   │   ├── import/                  # TextFormatGuide
 │   │   ├── reader/
 │   │   │   ├── MarkedTextRenderer.tsx   # 解析 {{vocab}} 划线与 [[blank]] 胶囊
 │   │   │   ├── WordPopoverCard.tsx      # 单词浮卡（语境义 + 全面释义 + TTS）
 │   │   │   ├── ClozeView.tsx            # 完形填空精读视图
 │   │   │   ├── ReadingView.tsx          # 传统阅读双语精读视图
-│   │   │   ├── NewTypeView.tsx          # 七选五/排序/标题匹配回填视图
+│   │   │   ├── NewTypeView.tsx          # 七选五/排序/小标题/多项对应四子类回填视图
 │   │   │   ├── TranslationSyntaxCard.tsx # 翻译题可视化句子结构剖析卡片
 │   │   │   └── WritingView.tsx          # 写作指导、高分范文、好词与好句视图
 │   │   ├── vocab/
-│   │   │   ├── VocabBookView.tsx        # 生词本列表、筛选、背词自测模式
-│   │   │   └── VocabPrintSheet.tsx      # 打印/导出 PDF 专用排版模板
+│   │   │   └── VocabBookView.tsx        # 生词本列表、来源筛选、背词自测与专用防截断打印表
 │   │   └── settings/
-│   │       ├── ProviderPresetList.tsx
-│   │       └── ModelParamsForm.tsx      # 详尽 Agent 级参数表单与连通性测试
+│   │       └── WebDavSyncCard.tsx       # WebDAV 配置、连通性测试、快照管理与 E2EE 解锁交互
 │   └── pages/
 │       ├── HomePage.tsx
 │       ├── ImportPage.tsx

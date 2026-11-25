@@ -100,6 +100,11 @@ export function WordPopoverCard({ popup, onClose, onJumpToVocab }: Props) {
                     原文: {popup.surfaceForm}
                   </span>
                 )}
+              {entry?.source === 'ai' && (
+                <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                  AI 补充
+                </span>
+              )}
             </div>
 
             {entry && (entry.phoneticUk || entry.phoneticUs) && (

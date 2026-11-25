@@ -51,10 +51,18 @@ export interface ReadingSection extends BaseSection {
   questions: ReadingQuestion[];
 }
 
+export type NewTypeSubType =
+  | 'seven_choose_five'
+  | 'ordering'
+  | 'heading_matching'
+  | 'info_matching';
+
 export type NewTypeBlock =
   | {
       kind: 'paragraph';
       id: string;
+      /** For ordering questions: original option letter if this paragraph was a pre-fixed anchor (e.g. "C") */
+      fixedOption?: string;
       en: string;
       zh: string;
     }
@@ -63,19 +71,23 @@ export type NewTypeBlock =
       number: number;
       selectedOption: string;
       answerSource: AnswerSource;
+      /** For info_matching (English II) or labeled slots: left-column prompt/person/topic name */
+      slotPrompt?: string;
       en: string;
       zh: string;
     };
 
 export interface NewTypeSection extends BaseSection {
   type: 'new_type';
-  subType: 'seven_choose_five' | 'ordering' | 'heading_matching';
+  subType: NewTypeSubType;
   blocks: NewTypeBlock[];
   optionBank: Array<{
     label: string;
     en: string;
     zh: string;
     usedInSlot: number | null;
+    /** For ordering questions: marks a pre-given fixed paragraph so UI does not label it as a distractor */
+    isFixed?: boolean;
   }>;
 }
 
@@ -192,12 +204,17 @@ export interface VocabOccurrence {
   sentenceZh: string;
 }
 
+export type VocabExtractMode = 'manual_only' | 'ai_augment';
+export type VocabExtractDensity = 'concise' | 'balanced' | 'comprehensive';
+
 export interface VocabEntry {
   id: string;
   lemma: string;
   surfaceForms: string[];
   phoneticUk: string;
   phoneticUs: string;
+  /** Whether the word was explicitly marked by the user ({{word}}) or auto-summarized/supplemented by AI */
+  source?: 'user' | 'ai';
   comprehensiveMeanings: Array<{
     pos: string;
     definitions: string[];
@@ -224,6 +241,7 @@ export interface ExamPaper {
   // 原始输入存档
   sourceMode: 'text' | 'image';
   parsingMode?: 'pre_parsed' | 'ai_segmented';
+  vocabExtractMode?: VocabExtractMode;
   rawMarkedText: string;
   sourceImageIds?: string[];
   sections: ExamSection[];

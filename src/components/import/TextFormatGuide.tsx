@@ -70,7 +70,7 @@ export function TextFormatGuide({ onInsertSample, defaultOpen = false }: Props) 
             <div className="rounded-xl bg-surface p-3 border border-border-subtle space-y-1.5">
               <div className="font-semibold text-text-primary">1. 题型切分与标准标签</div>
               <p>
-                手动切分可在对应题型前加 <code className="rounded bg-surface-subtle px-1 font-mono text-accent">=== [标签] ===</code>，或直接选中下方文本用快捷栏分配；也可开启「交由 AI 智能切分」免手写标签：
+                手动切分可在对应题型开头定位光标，点击快捷栏按钮直接插入 <code className="rounded bg-surface-subtle px-1 font-mono text-accent">=== [标签] ===</code> 分段标记；也可开启「交由 AI 智能切分」免手写标签：
               </p>
               <ul className="space-y-0.5 pl-4 list-disc text-[11.5px]">
                 <li>完形填空：<code className="font-mono">Section I Use of English</code></li>

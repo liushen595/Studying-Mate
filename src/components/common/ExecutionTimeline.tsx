@@ -49,6 +49,11 @@ function StepItem({ step }: { step: ExecutionStepState }) {
           <span className="truncate text-sm font-medium text-text-primary">
             {step.label}
           </span>
+          {step.detailNote && (
+            <span className="shrink-0 rounded-md bg-surface px-2 py-0.5 text-[11px] text-text-secondary border border-border-subtle">
+              {step.detailNote}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2 text-xs text-text-muted font-mono">
@@ -122,7 +127,7 @@ export function ExecutionTimeline() {
   const doneCount = steps.filter((s) => s.status === 'done').length;
 
   return (
-    <div className="island p-4 space-y-3">
+    <div className="no-print island p-4 space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2.5">
           {running ? (

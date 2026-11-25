@@ -57,13 +57,14 @@ export const ReadingResponseZod = z.object({
 export const NewTypeResponseZod = z.object({
   title: z.string().optional(),
   subType: z
-    .enum(['seven_choose_five', 'ordering', 'heading_matching'])
+    .enum(['seven_choose_five', 'ordering', 'heading_matching', 'info_matching'])
     .catch('seven_choose_five'),
   blocks: z.array(
     z.discriminatedUnion('kind', [
       z.object({
         kind: z.literal('paragraph'),
         id: z.string().default('p1'),
+        fixedOption: z.string().optional(),
         en: z.string(),
         zh: z.string(),
       }),
@@ -72,6 +73,7 @@ export const NewTypeResponseZod = z.object({
         number: z.number(),
         selectedOption: z.string(),
         answerSource: AnswerSourceZod,
+        slotPrompt: z.string().optional(),
         en: z.string(),
         zh: z.string(),
       }),
@@ -83,6 +85,7 @@ export const NewTypeResponseZod = z.object({
       en: z.string(),
       zh: z.string(),
       usedInSlot: z.number().nullable(),
+      isFixed: z.boolean().optional(),
     }),
   ),
 });
@@ -332,26 +335,41 @@ ${modeNote}
 
   if (type === 'new_type') {
     return {
-      systemPrompt: `你是资深考研英语教研专家。请对用户提供的考研英语【Section II·Part B 新题型（七选五 / 排序题 / 小标题匹配）】进行答案回填与完整翻译，严格输出纯 JSON。
+      systemPrompt: `你是资深考研英语教研专家。请对用户提供的考研英语【Section II·Part B 新题型】进行精准子题型识别、答案回填/排序还原与完整双语翻译，严格输出纯 JSON，严禁输出任何 JSON 以外的文字。
 
 ${modeNote}
 
 核心规则：
-1. **将正确选项直接回填进正文顺序**：\`blocks\` 按完整文章阅读顺序排列，将原文段落（\`kind: "paragraph"\`）与回填的正确句子/小标题（\`kind: "filled_slot"\`）交替组织，形成完整连贯的全文！
-2. **保留完整选项池**：\`optionBank\` 必须包含所有 \`[A]\`–\`[G]\` 选项及其译文，已选中的填写 \`usedInSlot\` 为对应题号（如 \`41\`），未选中的干扰项填 \`null\`。
-3. **尊重卷面订正答案**：若输入已标答案（如 \`[ANSWER: 41=E]\`），采用并标 \`answerSource: "paper_marked"\`；否则推理作答标 \`"llm_solved"\`。
-4. **跨题型噪声隔离**：新题型不存在翻译划线句，若输入中误带有 \`<u>...</u>\` 标签请直接剥离；忽略不属于 Part B 的完形/阅读选择题或写作指令。原样保留 \`{{...}}\` 生词标记。
+1. **严格判断并填写 \`subType\`（四选一，禁止盲目照抄示例值！）**：
+   - \`"seven_choose_five"\`：**七选五 / 选句（段）填空**（文章正文含 41–45 空位，从 [A]–[G] 中选 5 个句子/段落回填，余 2 项干扰项）。
+   - \`"ordering"\`：**排序题**（给出 7–8 个打乱顺序的 [A]–[G]/[H] 段落，通常有 2 个段落位置已给出，需排定 41–45 其余 5 段顺序）。
+   - \`"heading_matching"\`：**小标题匹配 / 概括大意**（给出若干正文段落对应 41–45，从 [A]–[G] 中为每段选择最佳小标题，余 2 项干扰项）。
+   - \`"info_matching"\`：**多项对应 / 信息匹配**（考研英语二常见：文章后给出 41–45 人物/机构/主题列表，从 [A]–[G] 中匹配对应观点/事件/特征，余 2 项干扰项）。
 
-必须返回严格匹配以下结构的 JSON：
+2. **按不同子题型组织 \`blocks\`（必须形成自然、连贯的完整阅读流）**：
+   - **七选五（\`seven_choose_five\`）**：\`blocks\` 按完整文章阅读顺序交替排列原文段（\`kind: "paragraph"\`）与回填的正确选项（\`kind: "filled_slot"\`，填对应 \`number: 41..45\` 与 \`selectedOption\`）。
+   - **排序题（\`ordering\`）**：\`blocks\` **必须严格按照还原后的最终正确阅读顺序**从头到尾排列全部段落！题目中已给出的固定段落使用 \`kind: "paragraph"\` 并填写 \`fixedOption\`（如 \`"C"\`）；其余 5 个由 41–45 排出的段落使用 \`kind: "filled_slot"\`（填写对应 \`number: 41..45\` 与 \`selectedOption\`）。
+   - **小标题匹配（\`heading_matching\`）**：如有总起引言段先放 \`kind: "paragraph"\`；随后对每一道题（41–45）严格按**「先放该段选中的小标题（\`kind: "filled_slot"\`，填 \`number\` 与 \`selectedOption\`），紧接着放对应的正文段落（\`kind: "paragraph"\`）」**成对排列。
+   - **多项对应（\`info_matching\`）**：先按顺序将文章全部正文段落放入 \`blocks\`（\`kind: "paragraph"\`），再依次放入 41–45 的匹配结果（\`kind: "filled_slot"\`，其中 \`slotPrompt\` 填写左栏题干对象如 \`"Mary"\` 或原题短语，\`en\`/\`zh\` 填写所选 [A]–[G] 选项的英文及译文）。
+
+3. **保留完整选项池 \`optionBank\`**：
+   - 必须收录全部 \`[A]\`–\`[G]\`（排序题如有 \`[H]\` 一并收录）选项的英文（原样保留其中的 \`{{...}}\` 生词标记）与中文译文。
+   - 被 41–45 题选中的选项填写 \`usedInSlot\` 为对应题号（如 \`41\`）；未作为 41–45 答案的项填 \`null\`。
+   - **排序题特别要求**：题目中已预先给出固定位置的段落，在 \`optionBank\` 中设 \`usedInSlot: null\` 且必须设 \`"isFixed": true\`（以区别于真正的干扰项）；非固定干扰项设 \`"isFixed": false\`。
+
+4. **尊重卷面订正答案**：若输入已标答案（如 \`[ANSWER: 41=E]\` 或卷面订正），必须采用并标 \`answerSource: "paper_marked"\`；否则推理作答标 \`"llm_solved"\`。
+5. **跨题型噪声隔离**：新题型不存在翻译划线句，若输入中误带有 \`<u>...</u>\` 标签请直接剥离；忽略不属于 Part B 的完形/阅读选择题或写作指令。原样保留所有 \`{{...}}\` 生词标记。
+
+必须返回严格匹配以下结构的 JSON（\`subType\` 必须按实际题型从上述 4 个枚举值中准确选择）：
 {
   "title": "Section II·Part B",
-  "subType": "seven_choose_five",
+  "subType": "seven_choose_five | ordering | heading_matching | info_matching",
   "blocks": [
-    { "kind": "paragraph", "id": "p1", "en": "原文段...", "zh": "译文..." },
-    { "kind": "filled_slot", "number": 41, "selectedOption": "E", "answerSource": "paper_marked", "en": "回填句英文（保留 {{vocab}}）", "zh": "回填句译文" }
+    { "kind": "paragraph", "id": "p1", "fixedOption": "仅排序题固定段填写如 C，否则省略", "en": "原文段（保留 {{vocab}}）", "zh": "译文..." },
+    { "kind": "filled_slot", "number": 41, "selectedOption": "E", "answerSource": "paper_marked", "slotPrompt": "仅多项对应题填写左栏人物/主题，否则省略", "en": "回填句/排序段/小标题/匹配项英文（保留 {{vocab}}）", "zh": "对应中文译文" }
   ],
   "optionBank": [
-    { "label": "A", "en": "选项A英文", "zh": "选项A译文", "usedInSlot": null }
+    { "label": "A", "en": "选项A英文（保留 {{vocab}}）", "zh": "选项A译文", "usedInSlot": null, "isFixed": false }
   ]
 }`,
       userPrompt: `标准题型标签：${title}\n\n原始文本：\n${rawText}`,

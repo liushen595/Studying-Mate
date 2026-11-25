@@ -23,9 +23,9 @@ import {
 } from '../lib/llm/presets';
 import { testProviderConnection } from '../lib/llm/adapters';
 import {
-  exportAllLearningData,
-  importLearningData,
-} from '../lib/db';
+  buildBackupBundle,
+  restoreBackupBundle,
+} from '../lib/sync/backup';
 import {
   LLMRequestError,
   type ApiProtocol,
@@ -34,6 +34,7 @@ import {
   type ReasoningEffort,
 } from '../types/llm';
 import { ErrorDiagnosticCard } from '../components/common/ErrorDiagnosticCard';
+import { WebDavSyncCard } from '../components/settings/WebDavSyncCard';
 
 const EFFORT_LABELS: Record<ReasoningEffort, string> = {
   none: 'none (关闭)',
@@ -107,7 +108,8 @@ export function SettingsPage() {
   };
 
   const handleExportBackup = async () => {
-    const json = await exportAllLearningData();
+    const bundle = await buildBackupBundle({ includeSettings: true });
+    const json = JSON.stringify(bundle, null, 2);
     const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -115,14 +117,23 @@ export function SettingsPage() {
     a.download = `studying-mate-backup-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    setBackupMessage('已导出全部学习记录备份（不含 API Key）。');
+    setBackupMessage(
+      `已导出 ${bundle.papers.length} 套试卷与应用设置（自动剔除 API Key 与 WebDAV 密码）。`,
+    );
   };
 
   const handleImportBackup = async (file: File) => {
     try {
       const text = await file.text();
-      const count = await importLearningData(text);
-      setBackupMessage(`成功导入 ${count} 套试卷记录！`);
+      const res = await restoreBackupBundle(text, {
+        mode: 'merge_newest',
+        restoreSettings: true,
+      });
+      setBackupMessage(
+        `导入完成：新增 ${res.added} 套、更新 ${res.updated} 套${
+          res.skippedOlder > 0 ? `、保留本地较新 ${res.skippedOlder} 套` : ''
+        }${res.settingsRestored ? '，并同步了应用设置（已保留本机 API Key）' : ''}！`,
+      );
     } catch (err) {
       setBackupMessage(`导入失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1045,6 +1056,9 @@ export function SettingsPage() {
             </div>
           </div>
 
+          {/* WebDAV Cloud Backup & Sync Island */}
+          <WebDavSyncCard />
+
           {/* Local Data Backup & Restore Island */}
           <div className="island p-5 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -1052,9 +1066,9 @@ export function SettingsPage() {
                 <Database className="h-4.5 w-4.5" />
               </div>
               <div>
-                <h3 className="text-sm font-semibold text-text-primary">本地学习数据备份与迁移</h3>
+                <h3 className="text-sm font-semibold text-text-primary">本地 JSON 备份与迁移</h3>
                 <p className="text-xs text-text-secondary">
-                  导出全部试卷精读与生词本 JSON（自动剔除 API Key），便于跨电脑/平板同步。
+                  导出全部试卷精读、生词本与应用设置（自动剔除 API Key），支持智能按最新时间合并恢复。
                 </p>
                 {backupMessage && (
                   <p className="mt-1 text-xs font-medium text-answer">{backupMessage}</p>

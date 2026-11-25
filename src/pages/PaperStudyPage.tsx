@@ -49,6 +49,8 @@ export function PaperStudyPage() {
     setFontStyle,
     fontSize,
     setFontSize,
+    vocabExtractMode,
+    vocabExtractDensity,
     getAnalysisProvider,
   } = useSettingsStore();
   const { running } = useTaskStore();
@@ -111,7 +113,10 @@ export function PaperStudyPage() {
   const handleRetrySection = async (sectionId: string, overrideRawText?: string) => {
     if (!paper) return;
     try {
-      await retrySingleSection(paper, sectionId, getAnalysisProvider(), overrideRawText);
+      await retrySingleSection(paper, sectionId, getAnalysisProvider(), overrideRawText, {
+        vocabExtractMode: paper.vocabExtractMode || vocabExtractMode,
+        vocabExtractDensity,
+      });
       setInlineEditOpen(false);
     } catch {
       // Error surfaced cleanly in ExecutionTimeline
