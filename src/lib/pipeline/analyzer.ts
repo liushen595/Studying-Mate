@@ -328,6 +328,8 @@ async function analyzeSingleSection(
     };
   }
 
+  section = sanitizeSectionZh(section);
+
   useTaskStore.getState().updateStep(stepId, {
     status: 'done',
     finishedAt: Date.now(),
@@ -335,6 +337,191 @@ async function analyzeSingleSection(
   });
 
   return { section, tokens: res.usage.totalTokens || 0 };
+}
+
+/**
+ * Strips stray markup/placeholders ({{vocab}}, <u>, [[1]], [ANSWER: ...]) from Chinese translation fields
+ * so translations remain clean even if an LLM occasionally echoes English markers.
+ */
+export function cleanChineseText(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/\{\{([^{}]*?)\}\}/g, '$1')
+    .replace(/<\/?u>/gi, '')
+    .replace(/\[\[\s*\d+\s*\]\]/g, '')
+    .replace(/\[ANSWER:[^\]]*\]/gi, '')
+    .replace(/ {2,}/g, ' ')
+    .trim();
+}
+
+function sanitizeSectionZh(section: ExamSection): ExamSection {
+  if (section.type === 'cloze') {
+    return {
+      ...section,
+      paragraphs: section.paragraphs.map((p) => ({ ...p, zh: cleanChineseText(p.zh) })),
+      blanks: section.blanks.map((b) => ({
+        ...b,
+        options: b.options.map((o) => ({ ...o, briefZh: cleanChineseText(o.briefZh) })),
+      })),
+    };
+  }
+  if (section.type === 'reading') {
+    return {
+      ...section,
+      paragraphs: section.paragraphs.map((p) => ({ ...p, zh: cleanChineseText(p.zh) })),
+      questions: section.questions.map((q) => ({
+        ...q,
+        stemZh: cleanChineseText(q.stemZh),
+        options: q.options.map((o) => ({ ...o, textZh: cleanChineseText(o.textZh) })),
+      })),
+    };
+  }
+  if (section.type === 'new_type') {
+    return {
+      ...section,
+      blocks: section.blocks.map((b) => ({ ...b, zh: cleanChineseText(b.zh) })),
+      optionBank: section.optionBank.map((o) => ({ ...o, zh: cleanChineseText(o.zh) })),
+    };
+  }
+  if (section.type === 'translation') {
+    return {
+      ...section,
+      contextPassage: section.contextPassage?.map((p) => ({ ...p, zh: cleanChineseText(p.zh) })),
+      items: section.items.map((it) => ({
+        ...it,
+        sentenceStructure: {
+          ...it.sentenceStructure,
+          backbone: {
+            ...it.sentenceStructure.backbone,
+            backboneZh: cleanChineseText(it.sentenceStructure.backbone.backboneZh),
+          },
+          components: it.sentenceStructure.components.map((c) => ({
+            ...c,
+            meaningZh: cleanChineseText(c.meaningZh),
+          })),
+          literalZh: cleanChineseText(it.sentenceStructure.literalZh),
+          polishedZh: cleanChineseText(it.sentenceStructure.polishedZh),
+          keyPoints: it.sentenceStructure.keyPoints.map(cleanChineseText),
+        },
+      })),
+    };
+  }
+  if (section.type === 'writing') {
+    return {
+      ...section,
+      tasks: section.tasks.map((t) => ({
+        ...t,
+        promptZh: cleanChineseText(t.promptZh),
+        visualSummary: t.visualSummary ? cleanChineseText(t.visualSummary) : undefined,
+        guidance: {
+          ...t.guidance,
+          coreThemeZh: cleanChineseText(t.guidance.coreThemeZh),
+          outline: t.guidance.outline.map((o) => ({
+            ...o,
+            keyPoints: o.keyPoints.map(cleanChineseText),
+          })),
+          scoringTips: t.guidance.scoringTips.map(cleanChineseText),
+        },
+        sampleEssay: {
+          ...t.sampleEssay,
+          paragraphs: t.sampleEssay.paragraphs.map((p) => ({ ...p, zh: cleanChineseText(p.zh) })),
+          commentaryZh: cleanChineseText(t.sampleEssay.commentaryZh),
+        },
+        goodWords: t.goodWords.map((w) => ({ ...w, meaningZh: cleanChineseText(w.meaningZh) })),
+        goodSentences: t.goodSentences.map((s) => ({
+          ...s,
+          zh: cleanChineseText(s.zh),
+          explanationZh: cleanChineseText(s.explanationZh),
+        })),
+      })),
+    };
+  }
+  return {
+    ...section,
+    paragraphs: section.paragraphs.map((p) => ({ ...p, zh: cleanChineseText(p.zh) })),
+  };
+}
+
+function sanitizeVocabEntriesZh(entries: VocabEntry[]): VocabEntry[] {
+  return entries.map((entry) => ({
+    ...entry,
+    comprehensiveMeanings: entry.comprehensiveMeanings.map((m) => ({
+      ...m,
+      definitions: m.definitions.map(cleanChineseText),
+    })),
+    occurrences: entry.occurrences.map((o) => ({
+      ...o,
+      contextMeaning: cleanChineseText(o.contextMeaning),
+      sentenceZh: cleanChineseText(o.sentenceZh),
+    })),
+    collocations: entry.collocations.map((c) => ({
+      ...c,
+      meaning: cleanChineseText(c.meaning),
+    })),
+    confusables: entry.confusables?.map((c) => ({
+      ...c,
+      diff: cleanChineseText(c.diff),
+    })),
+  }));
+}
+
+/**
+ * Persists an OCR/text draft or raw text update without storing image blobs.
+ */
+export async function savePaperDraftToDb(params: {
+  paperId?: string;
+  existingPaper?: ExamPaper | null;
+  title: string;
+  examType: ExamPaper['examType'];
+  sourceMode: ExamPaper['sourceMode'];
+  parsingMode: PromptParsingMode;
+  rawMarkedText: string;
+  asDraftOnly: boolean;
+  providerName: string;
+  modelId: string;
+  ocrModelId?: string;
+}): Promise<ExamPaper> {
+  const paperId =
+    params.paperId || params.existingPaper?.id || `paper-${crypto.randomUUID().slice(0, 10)}`;
+  const now = Date.now();
+
+  const paper: ExamPaper = params.existingPaper
+    ? {
+        ...params.existingPaper,
+        id: paperId,
+        title: params.title.trim() || params.existingPaper.title,
+        examType: params.examType,
+        parsingMode: params.parsingMode,
+        rawMarkedText: params.rawMarkedText,
+        sourceImageIds: undefined,
+        updatedAt: now,
+      }
+    : {
+        id: paperId,
+        title: params.title.trim() || `试卷草稿 (${new Date().toLocaleDateString()})`,
+        examType: params.examType,
+        createdAt: now,
+        updatedAt: now,
+        status: params.asDraftOnly ? 'ocr_draft' : 'analyzing',
+        sourceMode: params.sourceMode,
+        parsingMode: params.parsingMode,
+        rawMarkedText: params.rawMarkedText,
+        sourceImageIds: undefined,
+        sections: [],
+        vocabulary: [],
+        analysisMeta: {
+          providerName: params.providerName,
+          modelId: params.modelId,
+          ocrModelId: params.ocrModelId,
+        },
+      };
+
+  await db.transaction('rw', db.papers, db.images, async () => {
+    await db.images.where('paperId').equals(paperId).delete();
+    await db.papers.put(paper);
+  });
+
+  return paper;
 }
 
 function buildPendingSkeleton(d: ParsedSectionDraft): ExamSection {
@@ -402,6 +589,7 @@ export async function runPaperAnalysisPipeline(params: {
   provider: ProviderProfile;
   ocrModelId?: string;
   concurrency?: number;
+  onPaperInitialized?: (paperId: string) => void;
 }): Promise<ExamPaper> {
   const {
     existingPaper,
@@ -415,6 +603,7 @@ export async function runPaperAnalysisPipeline(params: {
     provider,
     ocrModelId,
     selectedDraftIds,
+    onPaperInitialized,
   } = params;
   const concurrency = Math.max(1, Math.min(4, params.concurrency ?? 2));
   const paperId = params.paperId || existingPaper?.id || `paper-${crypto.randomUUID().slice(0, 10)}`;
@@ -446,6 +635,37 @@ export async function runPaperAnalysisPipeline(params: {
       `Stage 2 · ${selectedDraftIds ? '增量' : '全卷'}深度解析（${provider.modelId}）`,
       initialSteps,
     );
+
+  // Build initial ExamPaper immediately so caller can navigate to /paper/:id right away
+  const basePaper: ExamPaper = {
+    id: paperId,
+    title: title.trim() || existingPaper?.title || '未命名考研英语试卷',
+    examType,
+    createdAt: existingPaper?.createdAt || now,
+    updatedAt: now,
+    status: 'analyzing',
+    sourceMode,
+    parsingMode,
+    vocabExtractMode,
+    rawMarkedText,
+    sourceImageIds: undefined, // Images are discarded after OCR and not persisted
+    sections: existingPaper?.sections || [],
+    vocabulary: existingPaper?.vocabulary || [],
+    analysisMeta: {
+      providerName: provider.name,
+      modelId: provider.modelId,
+      ocrModelId: ocrModelId || existingPaper?.analysisMeta?.ocrModelId,
+      totalTokensUsed: totalTokens,
+    },
+  };
+
+  if (useAiSplitStep) {
+    await db.transaction('rw', db.papers, db.images, async () => {
+      await db.images.where('paperId').equals(paperId).delete();
+      await db.papers.put(basePaper);
+    });
+    onPaperInitialized?.(paperId);
+  }
 
   try {
     // If AI segmentation mode is chosen without pre-sliced drafts, run Prompt Set B-1 first
@@ -565,23 +785,11 @@ export async function runPaperAnalysisPipeline(params: {
     useTaskStore.getState().appendSteps(pipelineSteps);
 
     const paper: ExamPaper = {
-      id: paperId,
-      title: title.trim() || existingPaper?.title || '未命名考研英语试卷',
-      examType,
-      createdAt: existingPaper?.createdAt || now,
-      updatedAt: now,
-      status: 'analyzing',
-      sourceMode,
-      parsingMode,
-      vocabExtractMode,
-      rawMarkedText,
-      sourceImageIds: undefined, // Images are discarded after OCR and not persisted
+      ...basePaper,
       sections: workingSections,
       vocabulary: retainedVocab,
       analysisMeta: {
-        providerName: provider.name,
-        modelId: provider.modelId,
-        ocrModelId: ocrModelId || existingPaper?.analysisMeta?.ocrModelId,
+        ...basePaper.analysisMeta!,
         totalTokensUsed: totalTokens,
       },
     };
@@ -591,6 +799,9 @@ export async function runPaperAnalysisPipeline(params: {
       await db.images.where('paperId').equals(paperId).delete();
       await db.papers.put(paper);
     });
+    if (!useAiSplitStep) {
+      onPaperInitialized?.(paperId);
+    }
 
     let hasErrors = false;
     let lastError: LLMErrorDetail | null = null;
@@ -786,10 +997,12 @@ export async function runPaperAnalysisPipeline(params: {
           modelId: res.modelId,
         });
         totalTokens += res.usage.totalTokens || 0;
-        const taggedEntries: VocabEntry[] = parsed.entries.map((entry) => ({
-          ...entry,
-          source: resolveVocabEntrySource(entry, vocabSourceLookup),
-        }));
+        const taggedEntries: VocabEntry[] = sanitizeVocabEntriesZh(
+          parsed.entries.map((entry) => ({
+            ...entry,
+            source: resolveVocabEntrySource(entry, vocabSourceLookup),
+          })),
+        );
         newVocabEntries.push(...taggedEntries);
         paper.vocabulary = mergeVocabEntries([...retainedVocab, ...newVocabEntries]);
         paper.updatedAt = Date.now();
@@ -822,7 +1035,7 @@ export async function runPaperAnalysisPipeline(params: {
     });
 
     const anySectionError = paper.sections.some((s) => s.status === 'error');
-    paper.status = hasErrors || anySectionError ? 'partial_error' : 'completed';
+    paper.status = hasErrors || anySectionError || controller.signal.aborted ? 'partial_error' : 'completed';
     paper.updatedAt = Date.now();
     await db.papers.put(paper);
     useTaskStore.getState().finishTask(hasErrors ? lastError : null);
@@ -838,6 +1051,14 @@ export async function runPaperAnalysisPipeline(params: {
             modelId: provider.modelId,
             timestamp: Date.now(),
           };
+    const stored = await db.papers.get(paperId);
+    if (stored && stored.status === 'analyzing') {
+      await db.papers.put({
+        ...stored,
+        status: 'partial_error',
+        updatedAt: Date.now(),
+      });
+    }
     useTaskStore.getState().updateStep(splitStepId, {
       status: 'error',
       finishedAt: Date.now(),
@@ -1022,10 +1243,12 @@ export async function retrySingleSection(
         modelId: vocabRes.modelId,
       });
       totalNewTokens += vocabRes.usage.totalTokens || 0;
-      const taggedEntries: VocabEntry[] = parsedVocab.entries.map((entry) => ({
-        ...entry,
-        source: resolveVocabEntrySource(entry, vocabSourceLookup),
-      }));
+      const taggedEntries: VocabEntry[] = sanitizeVocabEntriesZh(
+        parsedVocab.entries.map((entry) => ({
+          ...entry,
+          source: resolveVocabEntrySource(entry, vocabSourceLookup),
+        })),
+      );
       updatedVocabulary = mergeVocabEntries([...updatedVocabulary, ...taggedEntries]);
       useTaskStore.getState().updateStep(vocabStepId, {
         status: 'done',

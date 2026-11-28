@@ -161,7 +161,7 @@ export function buildVocabBatchPrompt(items: ExtractedVocabItem[]) {
 
 核心要求：
 1. **必须提供全面释义（重中之重）**：\`comprehensiveMeanings\` 绝不能只给当前文章里的单一含义！必须全面覆盖该词在考研英语大纲与通用英语中的主要词性及全部核心义项（多义词需列出多个义项，涵盖熟词僻义）。
-2. **精准给出本文语境义**：在 \`occurrences[].contextMeaning\` 中明确指出该词在对应原句中的准确含义；若属于考研高频「熟词僻义」，将 \`isUncommonMeaning\` 设为 \`true\`，并给出该原句的流畅中文译文 \`sentenceZh\`。
+2. **精准给出本文语境义**：在 \`occurrences[].contextMeaning\` 中明确指出该词在对应原句中的准确含义；若属于考研高频「熟词僻义」，将 \`isUncommonMeaning\` 设为 \`true\`，并给出该原句的流畅中文译文 \`sentenceZh\`（所有中文字段不要包含 \`{{}}\`、\`<u>\` 或 \`[[...]]\` 等标记与占位符）。
 3. **词元还原与标准音标**：将复数、过去式、分词、比较级等变形还原为原型 \`lemma\`，提供标准 IPA 英式（\`phoneticUk\`）与美式（\`phoneticUs\`）音标（短语可留空或给核心词音标）。
 4. **高价值拓展**：\`collocations\` 提供 2~3 个考研高频固定搭配；\`wordFamily\` 列出常见同根衍生词；仅在确实存在高辨析价值形近/近义词时填写 \`confusables\`。
 5. **零遗漏保证**：输出的 \`entries\` 必须覆盖输入清单中的每一个生词，\`id\` 保持与输入中的 \`key\` 一致。

@@ -338,7 +338,7 @@ export function PaperStudyPage() {
           )}
 
           {/* Per-Section Action Bar (Re-analyze ANY section, including done ones, or quick-edit its source text) */}
-          {activeSection && (
+          {activeSection && activeSection.status !== 'pending' && (
             <div className="no-print space-y-3">
               <div className="island px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
                 <div className="flex items-center gap-2 text-text-secondary">
@@ -424,16 +424,34 @@ export function PaperStudyPage() {
 
           {/* Active Section Content */}
           {!activeSection ? (
-            <div className="island p-10 text-center space-y-3">
-              <p className="text-sm text-text-secondary">
-                该试卷暂无解析内容（可能处于 OCR 草稿状态）。
+            paper.status === 'analyzing' || running ? (
+              <div className="island p-10 flex flex-col items-center justify-center gap-3 text-center">
+                <Loader2 className="h-6 w-6 animate-spin text-accent" />
+                <p className="text-sm font-medium text-text-secondary">
+                  正在切分试卷并启动解析…
+                </p>
+              </div>
+            ) : (
+              <div className="island p-10 text-center space-y-3">
+                <p className="text-sm text-text-secondary">
+                  {paper.status === 'partial_error'
+                    ? '试卷切分未完成，请返回校对原文后重试。'
+                    : '该试卷暂无解析内容（可能处于 OCR 草稿状态）。'}
+                </p>
+                <Link
+                  to={`/import?draft=${paper.id}`}
+                  className="inline-flex rounded-xl bg-accent px-4 py-2 text-xs font-medium text-white"
+                >
+                  前往校对并解析
+                </Link>
+              </div>
+            )
+          ) : activeSection.status === 'pending' ? (
+            <div className="island p-10 flex flex-col items-center justify-center gap-3 text-center">
+              <Loader2 className="h-6 w-6 animate-spin text-accent" />
+              <p className="text-sm font-medium text-text-secondary">
+                正在解析「{activeSection.title}」…
               </p>
-              <Link
-                to={`/import?draft=${paper.id}`}
-                className="inline-flex rounded-xl bg-accent px-4 py-2 text-xs font-medium text-white"
-              >
-                前往校对并解析
-              </Link>
             </div>
           ) : activeSection.status === 'error' ? (
             <div className="island p-6 space-y-3 border-danger/30">

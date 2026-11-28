@@ -36,6 +36,10 @@ import type {
 import { useSettingsStore } from '../stores/useSettingsStore';
 import { useTaskStore } from '../stores/useTaskStore';
 import {
+  useImportSessionStore,
+  type LocalImageItem,
+} from '../stores/useImportSessionStore';
+import {
   CANONICAL_SECTION_PRESETS,
   estimateImageTokens,
   estimateTextTokens,
@@ -49,32 +53,20 @@ import {
   type ParsedSectionDraft,
 } from '../lib/pipeline/pre-parser';
 import {
-  blobsToAttachments,
   formatByteSize,
   preprocessExamImage,
 } from '../lib/pipeline/image-prep';
 import {
   findMatchingExistingSection,
   runAiPaperSplitPreview,
-  runOcrStage,
   runPaperAnalysisPipeline,
+  savePaperDraftToDb,
 } from '../lib/pipeline/analyzer';
+import { executeOcrSession } from '../lib/pipeline/ocr-session';
 import type { PromptParsingMode } from '../lib/prompts/sections';
 import { db } from '../lib/db';
 import { ExecutionTimeline } from '../components/common/ExecutionTimeline';
 import { TextFormatGuide } from '../components/import/TextFormatGuide';
-
-interface LocalImageItem {
-  id: string;
-  name: string;
-  blob: Blob;
-  previewUrl: string;
-  width: number;
-  height: number;
-  originalBytes?: number;
-  compressedBytes: number;
-  ocrStatus: 'pending' | 'done';
-}
 
 const SECTION_TYPE_OPTIONS: Array<{ value: ExamSection['type'] | 'auto'; label: string }> = [
   { value: 'auto', label: '自动识别并按标准标签分段' },
@@ -107,16 +99,35 @@ export function ImportPage() {
   const analysisProvider = getAnalysisProvider();
   const visionProvider = getVisionProvider();
 
-  const [existingPaper, setExistingPaper] = useState<ExamPaper | null>(null);
-  const [mode, setMode] = useState<'text' | 'image'>('text');
-  const [parsingMode, setParsingMode] = useState<PromptParsingMode>('pre_parsed');
-  const [title, setTitle] = useState('');
-  const [examType, setExamType] = useState<ExamPaper['examType']>('english_1');
-  const [forcedSectionType, setForcedSectionType] = useState<ExamSection['type'] | 'auto'>('auto');
-  const [rawText, setRawText] = useState('');
+  const {
+    loadedPaperId,
+    existingPaper,
+    mode,
+    parsingMode,
+    title,
+    examType,
+    forcedSectionType,
+    rawText,
+    aiPreviewDrafts,
+    images,
+    ocrStage,
+    draftPaperId,
+    setField,
+    setImages,
+    loadPaperIntoSession,
+    resetSession,
+  } = useImportSessionStore();
 
-  // AI split preview state (used when parsingMode === 'ai_segmented' & user runs preview)
-  const [aiPreviewDrafts, setAiPreviewDrafts] = useState<ParsedSectionDraft[] | null>(null);
+  const setExistingPaper = (v: ExamPaper | null) => setField('existingPaper', v);
+  const setMode = (v: 'text' | 'image') => setField('mode', v);
+  const setParsingMode = (v: PromptParsingMode) => setField('parsingMode', v);
+  const setTitle = (v: string) => setField('title', v);
+  const setExamType = (v: ExamPaper['examType']) => setField('examType', v);
+  const setForcedSectionType = (v: ExamSection['type'] | 'auto') => setField('forcedSectionType', v);
+  const setRawText = (v: string) => setField('rawText', v);
+  const setAiPreviewDrafts = (v: ParsedSectionDraft[] | null) => setField('aiPreviewDrafts', v);
+  const setOcrStage = (v: 'upload' | 'review') => setField('ocrStage', v);
+  const setDraftPaperId = (v: string | undefined) => setField('draftPaperId', v);
 
   // Incremental section selection (draft IDs selected to run)
   const [selectedDraftIds, setSelectedDraftIds] = useState<Set<string>>(new Set());
@@ -124,43 +135,34 @@ export function ImportPage() {
   // Track last cursor position inside textarea for predictable marker insertion
   const cursorPosRef = useRef<number | null>(null);
 
-  // Image OCR state (transient in-memory only; never persisted to IndexedDB after OCR)
-  const [images, setImages] = useState<LocalImageItem[]>([]);
+  // Local UI state for image preview/zoom
   const [dragImageIdx, setDragImageIdx] = useState<number | null>(null);
-  const [ocrStage, setOcrStage] = useState<'upload' | 'review'>('upload');
   const [activeImageIdx, setActiveImageIdx] = useState(0);
   const [zoom, setZoom] = useState(1);
-  const [draftPaperId, setDraftPaperId] = useState<string | undefined>(undefined);
   const [savedTip, setSavedTip] = useState<string | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
 
-  // Load existing paper (?paperId=... or ?draft=...)
+  // Sync session with ?paperId=... or ?draft=... (reset when navigating to fresh /import)
   useEffect(() => {
-    if (!targetPaperId) return;
+    if (!targetPaperId) {
+      if (loadedPaperId !== null) {
+        resetSession();
+      }
+      return;
+    }
+    if (loadedPaperId === targetPaperId) return;
+
     (async () => {
       const paper = await db.papers.get(targetPaperId);
       if (!paper) return;
-      setExistingPaper(paper);
-      setDraftPaperId(paper.id);
-      setTitle(paper.title);
-      setExamType(paper.examType);
-      setRawText(paper.rawMarkedText);
-      setParsingMode(paper.parsingMode || 'pre_parsed');
-      // Images are not persisted after OCR; user opens in text/review mode and can switch to image tab to append new photos
-      setMode('text');
+      loadPaperIntoSession(paper);
       // Clean up any legacy stored image blobs if present
       await db.images.where('paperId').equals(paper.id).delete().catch(() => {});
     })();
-  }, [targetPaperId]);
-
-  // Cleanup object URLs on unmount
-  useEffect(() => {
-    return () => {
-      images.forEach((img) => URL.revokeObjectURL(img.previewUrl));
-    };
-  }, []);
+  }, [targetPaperId, loadedPaperId, loadPaperIntoSession, resetSession]);
 
   // Support Ctrl+V image paste in image upload view
   useEffect(() => {
@@ -473,53 +475,27 @@ export function ImportPage() {
     textToSave: string,
     asDraftOnly: boolean,
   ): Promise<string> => {
-    const paperId = draftPaperId || existingPaper?.id || `paper-${crypto.randomUUID().slice(0, 10)}`;
-    setDraftPaperId(paperId);
-    const now = Date.now();
-
-    const basePaper: ExamPaper = existingPaper
-      ? {
-          ...existingPaper,
-          id: paperId,
-          title: title.trim() || existingPaper.title,
-          examType,
-          parsingMode,
-          rawMarkedText: textToSave,
-          sourceImageIds: undefined,
-          updatedAt: now,
-        }
-      : {
-          id: paperId,
-          title: title.trim() || `试卷草稿 (${new Date().toLocaleDateString()})`,
-          examType,
-          createdAt: now,
-          updatedAt: now,
-          status: asDraftOnly ? 'ocr_draft' : 'analyzing',
-          sourceMode: mode,
-          parsingMode,
-          rawMarkedText: textToSave,
-          sourceImageIds: undefined,
-          sections: [],
-          vocabulary: [],
-          analysisMeta: {
-            providerName: analysisProvider.name,
-            modelId: analysisProvider.modelId,
-            ocrModelId: mode === 'image' ? visionProvider.modelId : undefined,
-          },
-        };
-
-    await db.transaction('rw', db.papers, db.images, async () => {
-      // Do NOT persist images; clean up any legacy image blobs for this paper
-      await db.images.where('paperId').equals(paperId).delete();
-      await db.papers.put(basePaper);
+    const saved = await savePaperDraftToDb({
+      paperId: draftPaperId || existingPaper?.id,
+      existingPaper,
+      title,
+      examType,
+      sourceMode: mode,
+      parsingMode,
+      rawMarkedText: textToSave,
+      asDraftOnly,
+      providerName: analysisProvider.name,
+      modelId: analysisProvider.modelId,
+      ocrModelId: mode === 'image' ? visionProvider.modelId : undefined,
     });
-
-    setExistingPaper(basePaper);
-    return paperId;
+    setDraftPaperId(saved.id);
+    setExistingPaper(saved);
+    setField('loadedPaperId', saved.id);
+    return saved.id;
   };
 
-  /** Stage 1: Incremental or Full OCR -> Append or Replace -> Enter Intermediate Review Workbench */
-  const handleRunOcr = async (forceFull = false) => {
+  /** Stage 1: Incremental or Full OCR -> Route immediately to /import/ocr -> Review Workbench */
+  const handleRunOcr = (forceFull = false) => {
     if (images.length === 0) return;
     const targets = forceFull ? images : pendingImages;
     if (targets.length === 0) {
@@ -527,42 +503,32 @@ export function ImportPage() {
       return;
     }
 
-    try {
-      const attachments = await blobsToAttachments(targets);
-      const pageOffset = forceFull ? 0 : doneImageCount;
-      const ocrText = await runOcrStage({
-        visionProvider,
-        images: attachments,
-        batchSize: 2,
-        pageOffset,
-        totalPageCount: images.length,
-      });
+    const returnPath = editPaperId
+      ? `/import?paperId=${editPaperId}`
+      : draftPaperId
+        ? `/import?draft=${draftPaperId}`
+        : '/import';
 
-      const nextRawText = forceFull
-        ? ocrText
-        : rawText.trim()
-          ? `${rawText.trim()}\n\n${ocrText}`
-          : ocrText;
+    setField('ocrForceFull', forceFull);
+    setField('ocrReturnPath', returnPath);
+    setActiveImageIdx(0);
+    setZoom(1);
 
-      updateRawTextAndInvalidateAiPreview(nextRawText);
-      const targetIds = new Set(targets.map((t) => t.id));
-      setImages((prev) =>
-        prev.map((img) => (targetIds.has(img.id) ? { ...img, ocrStatus: 'done' } : img)),
-      );
-
-      // Save OCR text to paper (images are NOT persisted to IndexedDB)
-      await saveRawTextToDb(nextRawText, !existingPaper);
-      setOcrStage('review');
-      setActiveImageIdx(0);
-      setZoom(1);
-    } catch {
-      // Error surfaced cleanly in ExecutionTimeline
-    }
+    void executeOcrSession({
+      forceFull,
+      onSuccess: (nextPath) => {
+        if (window.location.pathname === '/import/ocr') {
+          navigate(nextPath, { replace: true });
+        }
+      },
+    });
+    navigate('/import/ocr');
   };
 
   /** Preview AI Smart Segmentation (Prompt Set B-1) before launching full analysis */
   const handlePreviewAiSplit = async () => {
     if (!rawText.trim()) return;
+    timelineRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     try {
       const { drafts } = await runAiPaperSplitPreview({
         provider: analysisProvider,
@@ -584,7 +550,7 @@ export function ImportPage() {
     setTimeout(() => setSavedTip(null), 2200);
   };
 
-  /** Stage 2: Launch Full or Incremental Analysis Pipeline */
+  /** Stage 2: Launch Full or Incremental Analysis Pipeline & route immediately to /paper/:id */
   const handleStartAnalysis = async (forceFull = false) => {
     if (!rawText.trim()) return;
     if (parsingMode === 'pre_parsed' && effectiveDrafts.length === 0) return;
@@ -598,32 +564,39 @@ export function ImportPage() {
     if (useIncrementalSelection && selectedDraftIds.size === 0) {
       // Nothing selected to re-analyze: just save raw text edits and return to study page
       const id = await saveRawTextToDb(rawText, false);
+      resetSession();
       navigate(`/paper/${id}`);
       return;
     }
 
-    const paper = await runPaperAnalysisPipeline({
-      paperId: draftPaperId || existingPaper?.id,
-      existingPaper: existingPaper || undefined,
-      title:
-        title.trim() ||
-        existingPaper?.title ||
-        effectiveDrafts[0]?.title ||
-        `考研英语精读 (${new Date().toLocaleDateString()})`,
-      examType,
-      sourceMode: existingPaper?.sourceMode || mode,
-      parsingMode,
-      vocabExtractMode,
-      vocabExtractDensity,
-      rawMarkedText: rawText,
-      sectionsDraft: effectiveDrafts,
-      selectedDraftIds: useIncrementalSelection ? selectedDraftIds : undefined,
-      provider: analysisProvider,
-      ocrModelId: mode === 'image' ? visionProvider.modelId : existingPaper?.analysisMeta?.ocrModelId,
-      concurrency,
-    });
-
-    navigate(`/paper/${paper.id}`);
+    try {
+      await runPaperAnalysisPipeline({
+        paperId: draftPaperId || existingPaper?.id,
+        existingPaper: existingPaper || undefined,
+        title:
+          title.trim() ||
+          existingPaper?.title ||
+          effectiveDrafts[0]?.title ||
+          `考研英语精读 (${new Date().toLocaleDateString()})`,
+        examType,
+        sourceMode: existingPaper?.sourceMode || mode,
+        parsingMode,
+        vocabExtractMode,
+        vocabExtractDensity,
+        rawMarkedText: rawText,
+        sectionsDraft: effectiveDrafts,
+        selectedDraftIds: useIncrementalSelection ? selectedDraftIds : undefined,
+        provider: analysisProvider,
+        ocrModelId: mode === 'image' ? visionProvider.modelId : existingPaper?.analysisMeta?.ocrModelId,
+        concurrency,
+        onPaperInitialized: (paperId) => {
+          resetSession();
+          navigate(`/paper/${paperId}`);
+        },
+      });
+    } catch {
+      // Error surfaced cleanly in ExecutionTimeline on /paper/:id
+    }
   };
 
   const toggleDraftSelected = (id: string) => {
@@ -711,7 +684,9 @@ export function ImportPage() {
       </div>
 
       {/* Live Agent Execution Timeline */}
-      <ExecutionTimeline />
+      <div ref={timelineRef}>
+        <ExecutionTimeline />
+      </div>
 
       {/* Paper Metadata Bar */}
       <div className="island p-4 grid gap-3 sm:grid-cols-3">
